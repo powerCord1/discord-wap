@@ -1,19 +1,18 @@
 <?xml version="1.0"?>
 <!DOCTYPE wml PUBLIC "-//WAPFORUM//DTD WML 1.1//EN" "http://www.wapforum.org/DTD/wml_1.1.xml">
 <wml>
-    <card id="msg" title="$(cname)">
+    <card id="msg" title="<%- sanitize(cname) %>">
         <p align="center">
             <anchor>
-                <go method="get" href="/wap/ch">
+                <go method="get" href="<%= gpath %>/<%= id %>">
                     <postfield name="token" value="$(token)"/>
-                    <postfield name="id" value="<%= id %>"/>
                 </go>
                 Back
             </anchor>
         </p>
 
         <p>
-            <b><%= authorName %>:</b> <%- content %>
+            <b><%- sanitize(authorName) %>:</b> <%- fit(content) %>
         </p>
 
         <p>
@@ -21,40 +20,30 @@
                 <go href="#reply">
                     <setvar name="message" value=""/>
                     <setvar name="rec" value="<%= msgid %>"/>
-                    <setvar name="recname" value="<%= authorName %>"/>
+                    <setvar name="recname" value="<%- sanitize(authorName) %>"/>
                 </go>
                 Reply to message
             </anchor>
             <% if (isOwn) { %>
                 <br/>
                 <anchor>
-                    <go method="get" href="/wap/edit">
+                    <go method="get" href="<%= gpath %>/<%= id %>/m/<%= msgid %>/edit">
                         <postfield name="token" value="$(token)"/>
-                        <postfield name="id" value="<%= id %>"/>
-                        <postfield name="msgid" value="<%= msgid %>"/>
                     </go>
                     Edit message
                 </anchor>
                 <br/>
                 <anchor>
-                    <go method="post" href="/wap/delete">
+                    <go method="post" href="<%= gpath %>/<%= id %>/m/<%= msgid %>/delete">
                         <postfield name="token" value="$(token)"/>
-                        <postfield name="id" value="<%= id %>"/>
-                        <postfield name="msgid" value="<%= msgid %>"/>
                     </go>
                     Delete message
                 </anchor>
             <% } %>
             <br/>
             <anchor>
-                <go method="get" href="/wap/share">
+                <go method="get" href="<%= gpath %>/<%= id %>/m/<%= msgid %>/share">
                     <postfield name="token" value="$(token)"/>
-                    <postfield name="id" value="<%= id %>"/>
-                    <postfield name="msgid" value="<%= msgid %>"/>
-                    <postfield name="cname" value="$(cname)"/>
-                    <% if (locals.gid) { %>
-                        <postfield name="gid" value="<%= gid %>"/>
-                    <% } %>
                 </go>
                 Share
             </anchor>
@@ -67,7 +56,7 @@
         </p>
     </card>
 
-    <card id="reply" title="$(cname)">
+    <card id="reply" title="<%- sanitize(cname) %>">
         <onevent type="onenterbackward">
             <prev/>
         </onevent>
@@ -80,9 +69,8 @@
 
         <p align="center">
             <anchor>
-                <go method="post" href="/wap/send">
+                <go method="post" href="<%= gpath %>/<%= id %>/send">
                     <postfield name="token" value="$(token)"/>
-                    <postfield name="id" value="<%= id %>"/>
                     <postfield name="text" value="$(message)"/>
                     <postfield name="recipient" value="$(rec)"/>
                 </go>
@@ -90,9 +78,8 @@
             </anchor>
             <br/>
             <anchor>
-                <go method="post" href="/wap/send">
+                <go method="post" href="<%= gpath %>/<%= id %>/send">
                     <postfield name="token" value="$(token)"/>
-                    <postfield name="id" value="<%= id %>"/>
                     <postfield name="text" value="$(message)"/>
                     <postfield name="recipient" value="$(rec)"/>
                     <postfield name="ping" value="0"/>

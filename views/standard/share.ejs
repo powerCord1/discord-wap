@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%- include("include/head.ejs") %>
+    <title><%= cname %></title>
+</head>
+<body>
+    <div class="nav">
+        <a href="<%= gpath %>/<%= id %>/m/<%= msgid %><%= tokenParam %>">&lt; Options</a>
+    </div>
+
+    <div class="sb">Share</div>
+    <div class="s">
+        <div><b><%- fit(authorName) %>:</b> <%- fit(rawContent) %></div>
+    </div>
+
+    <div class="sb">Options</div>
+    <div class="s">
+        <div><a href="<%= shareLinkUrl %>">&gt; Share link (SMS)</a></div>
+        <% if (rawContent) { %>
+            <div><a href="<%= shareTextUrl %>">&gt; Share text (SMS)</a></div>
+        <% } %>
+    </div>
+</body>
+</html>

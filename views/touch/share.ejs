@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%- include("include/head.ejs") %>
+    <title><%= cname %></title>
+</head>
+<body>
+    <table class="nav" id="t">
+        <tr>
+            <td><a href="<%= gpath %>/<%= id %>/m/<%= msgid %><%= tokenParam %>"><img src="/back.png" alt="Back"></a></td>
+            <td class="title"><%- fit(cname) %></td>
+            <td><a href="#b"><img src="/btm.png" alt="Bottom"></a></td>
+        </tr>
+    </table>
+
+    <div class="section">
+        <h3>Share</h3>
+        <p><b><%- fit(authorName) %>:</b> <%- fit(rawContent) %></p>
+        <hr>
+        <ul style="list-style-type: none; padding-left: 0;">
+            <li style="margin-bottom: 0.5em;">
+                <a href="<%= shareLinkUrl %>">Share link (SMS)</a>
+            </li>
+            <% if (rawContent) { %>
+                <li style="margin-bottom: 0.5em;">
+                    <a href="<%= shareTextUrl %>">Share text (SMS)</a>
+                </li>
+            <% } %>
+        </ul>
+    </div>
+</body>
+</html>

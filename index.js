@@ -4,9 +4,15 @@ const axios = require('axios');
 const EmojiConvertor = require('emoji-js');
 const path = require('path');
 const { LRUCache } = require('lru-cache');
-const sanitizeHtml = require('sanitize-html');
 const cookieParser = require('cookie-parser');
 const multer = require('multer');
+const { minify } = require('html-minifier-terser');
+const ejs = require('ejs');
+
+const { testGateway, getNotifications } = require('./gateway');
+const { themes, getDefaultTheme } = require('./themes');
+const { compressID, decompressID, compressToken, decompressToken } = require('./compress');
+const stringFormatMiddleware = require('./format');
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -24,89 +30,14 @@ app.set('views', './views');
 
 app.use(express.static(path.join(__dirname, 'static')));
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+app.use(stringFormatMiddleware);
 
 // ID -> username mapping cache (used for parsing mentions)
 const userCache = new LRUCache({ max: 10000 });
 const channelNameCache = new LRUCache({ max: 10000 });
 const channelGuildCache = new LRUCache({ max: 10000 });
 const messageCache = new LRUCache({ max: 10000, ttl: 30 * 60 * 1000 });
-
-// Base64 but better - instead of '/' and '=' characters, we use '-' and '_', which stay as one character when URL encoded
-function customBase64Decode(str) {
-    return atob(str.replace(/-/g, '+').replace(/_/g, '/'));
-}
-function customBase64Encode(str) {
-    return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')
-}
-
-function decompressID(id, type) {
-    try {
-        const idStr = customBase64Decode(id);
-
-        return String(
-            BigInt(idStr.charCodeAt(0)) << 56n |
-            BigInt(idStr.charCodeAt(1)) << 48n |
-            BigInt(idStr.charCodeAt(2)) << 40n |
-            BigInt(idStr.charCodeAt(3)) << 32n |
-            BigInt(idStr.charCodeAt(4)) << 24n |
-            BigInt(idStr.charCodeAt(5)) << 16n |
-            BigInt(idStr.charCodeAt(6)) << 8n |
-            BigInt(idStr.charCodeAt(7))
-        );
-    } catch (e) {
-        throw new Error(`A required ${type} ID is missing or invalid. Please return to the Discord WAP front page and try again.`);
-    }
-}
-
-function compressID(id) {
-    id = BigInt(id);
-
-    const arr = [
-        Number(id >> 56n),
-        Number((id >> 48n) & 0xFFn),
-        Number((id >> 40n) & 0xFFn),
-        Number((id >> 32n) & 0xFFn),
-        Number((id >> 24n) & 0xFFn),
-        Number((id >> 16n) & 0xFFn),
-        Number((id >> 8n) & 0xFFn),
-        Number(id & 0xFFn),
-    ];
-    return customBase64Encode(String.fromCharCode(...arr))
-}
-
-function decompressToken(token) {
-    if (!token || !token.trim().length) throw new Error("Token not specified");
-
-    try {
-        let idPart = token.split('.')[0];
-        const rest = '.' + token.split('.').slice(1).join('.');
-
-        if (idPart.length < 17) {
-            idPart = btoa(decompressID(idPart, 'user'));
-        }
-        return idPart + rest;
-    }
-    catch (e) {
-        throw new Error("Token is invalid");
-    }
-}
-
-function compressToken(token) {
-    if (!token || !token.trim().length) throw new Error("Token not specified");
-
-    try {
-        let idPart = token.split('.')[0];
-        const rest = '.' + token.split('.').slice(1).join('.');
-
-        if (idPart.length >= 17) {
-            idPart = compressID(atob(idPart));
-        }
-        return idPart + rest;
-    }
-    catch (e) {
-        throw new Error("Token is invalid");
-    }
-}
 
 function getRawUserIdFromToken(token) {
     if (!token || !token.trim().length) return null;
@@ -170,48 +101,24 @@ function getIdTimestamp(res, id) {
     }
 }
 
-/**
- * Get an approximation of how many characters can fit on one line on the requester's device's display.
- * @param {express.Request} req The express request to check
- * @returns A rough and somewhat conservative estimate of how many columns the user's device's screen has
- */
-function getCharactersPerLine(req) {
-    const ua = req.headers['user-agent'];
-    if (!ua) return 16;
-
-    // don't limit on modern devices
-    if (req.res.locals.format == "html") return 999;
-
-    // siemens: assume 101 pixel wide display (there are larger ones too, but most of them have decent j2me support anyway)
-    // small font size, tested on siemens a65. a55 seems to use the same font
-    // for medium font size, a suitable number would be 15
-    if (ua.startsWith('SIE-')) return 18;
-
-    // could check some non-nokia models, for now, make a safe assumption of 16 chars
-    // could also use uaprof on devices that have that
-    if (!ua.startsWith('Nokia')) return 16;
-
-    // models with 84×48 display
-    if (/^Nokia(3330|5510|8265|8310)/.test(ua)) return 16;
-
-    // models with 96×65 or similar display (list may be incomplete)
-    if (/^Nokia(1101|3350|3410|35[^0]\d|3610|6010|6210|6310|6510|7110|8910)/.test(ua)) return 19;
-
-    // other nokias, assume a 128×128 or 128×160 display
-    return 21;
+function normalizeStr(str, convertEmoji = false) {
+    if (str === null || str === undefined) return "(err)";
+    str = String(str);
+    if (convertEmoji) str = parseMessageContentText(str);
+    return str;
 }
 
-function oneLine(req, str, showEmoji = true) {
-    // Make sure string fits on one line on the screen
-    if (str === null || str === undefined) return "(err)";
+function normalizeStripEmoji(req, str) {
+    str = normalizeStr(str);
 
-    if (showEmoji) str = parseMessageContentText(String(str));
-    else str = sanitize(String(str));
+    if (!req.res.locals.theme.stripEmoji) return str;
 
-    const chars = getCharactersPerLine(req);
+    const strConvEmoji = normalizeStr(str, true);
+    if (str == strConvEmoji) return str;
 
-    if (str.length > chars) return str.substring(0, chars - 1).trimEnd() + "...";
-    return str;
+    const strNoEmoji = strConvEmoji.replace(/:\w+:/g, '');
+    if (strNoEmoji.length) return strNoEmoji;
+    return strConvEmoji;
 }
 
 function getError(e) {
@@ -232,33 +139,20 @@ function getError(e) {
     return e.message;
 }
 
-function handleError(res, e) {
-    console.log(e);
-    render(res, "error", { error: getError(e) });
-}
-
-function sanitize(str) {
-    return sanitizeHtml(str, { allowedTags: [], disallowedTagsMode: 'recursiveEscape' });
-}
-
-function fixWordBreak(str) {
-    // add CSS "word-break: break-all" to words with at least 15 chars
-    return str.replace(/([^\s]{15,})/g, "<span class='break'>$1</span>")
-}
-
 function parseMessageObject(req, res, msg) {
     const result = {
         id: compressID(msg.id),
         showAuthor: msg.showAuthor,
-        avatar: msg.avatar
+        avatar: msg.avatar,
+        edited: msg.edited_timestamp
     }
     if (msg.author) {
         const author = msg.author.global_name ?? msg.author.username;
         result.author = {
             id: compressID(msg.author.id),
-            name: oneLine(req, author, false)
+            name: normalizeStripEmoji(req, author),
         }
-        result.authorLine = oneLine(req, author + " " + getIdTimestamp(res, msg.id), false);
+        result.authorLine = normalizeStripEmoji(req, author + " " + getIdTimestamp(res, msg.id));
         result.timestamp = getIdTimestamp(res, msg.id);  // separate timestamp for html version
     }
     if (msg.type >= 1 && msg.type <= 11) {
@@ -266,6 +160,7 @@ function parseMessageObject(req, res, msg) {
         result.type = msg.type;
     }
 
+    // Parse content 
     result.content = parseMessageContent(res, msg);
 
     if (msg.referenced_message) {
@@ -274,21 +169,21 @@ function parseMessageObject(req, res, msg) {
         // Replace newlines with spaces (reply is shown as one line)
         content = content.replace(/\r\n|\r|\n/gm, "  ");
 
-        const limit = (res.locals.settings.layout != 'standard' && !res.locals.settings.modern) ? 30 : 50;
+        const limit = res.locals.theme.replyPreviewLength;
 
         if (content && content.length > limit) {
             content = content.slice(0, limit - 3).trim() + '...';
         }
         result.referenced_message = {
             author: {
-                name: oneLine(req, msg.referenced_message.author.global_name ?? msg.referenced_message.author.username, false),
+                name: normalizeStripEmoji(req, msg.referenced_message.author.global_name ?? msg.referenced_message.author.username),
                 id: compressID(msg.referenced_message.author.id),
             },
             content
         }
     }
 
-    if (res.locals.settings.modern && msg.attachments) {
+    if (res.locals.theme.showAttachments && msg.attachments) {
         result.attachments = msg.attachments.map(att => {
             const isImage = att.content_type?.includes('image');
             let url;
@@ -310,7 +205,7 @@ function parseMessageObject(req, res, msg) {
             }
 
             return {
-                filename: fixWordBreak(sanitize(att.filename)),
+                filename: att.filename,
                 url
             }
         })
@@ -349,7 +244,7 @@ function parseMessageContentNonStatus(res, msg, singleLine) {
         result = parseMessageContentText(msg.content);
     }
 
-    if (msg.attachments?.length && !res.locals.settings.modern) {
+    if (msg.attachments?.length && !res.locals.theme.showAttachments) {
         msg.attachments.forEach(att => {
             if (result.length) result += "\n";
             result += `(file: ${parseMessageContentText(att.filename)})`;
@@ -368,11 +263,10 @@ function parseMessageContentNonStatus(res, msg, singleLine) {
     }
     if (result == '' && !msg.attachments) return "(unsupported message)";
 
-    // iOS keyboard (I think it's that) is stupid and replaces apostrophes with this unicode character
-    // that shows up as a rectangle/missing character on old phones. Replace it with a normal apostrophe.
+    // iOS keyboard replaces apostrophes with a unicode character that shows up as missing character on old phones
     result = result.replace(/’/g, "'");
 
-    result = fixWordBreak(sanitize(result)).replace(/\n/g, singleLine ? ' ' : '<br/>');
+    if (singleLine) result = result.replace(/\n/g, " ");
     return result;
 }
 
@@ -382,63 +276,61 @@ function parseMessageContentText(content) {
         // try to convert <@12345...> format into @username
         .replace(/<@(\d{15,})>/gm, (mention, id) => {
             if (userCache.has(id)) return `@${userCache.get(id)}`;
-            else return mention;
+            // return mention with shortened ID
+            return `@(${compressID(id)})`;
         })
-        // try to convert <#12345...> format into #channelname
         .replace(/<#(\d{15,})>/gm, (mention, id) => {
-            if (channelNameCache.has(id)) return `#${channelNameCache.get(id)}`;
-            else return mention;
+            if (channelNameCache.has(id)) return channelNameCache.get(id);
+            // return mention with shortened ID
+            return `#(${compressID(id)})`;
         })
-        // replace <:name:12345...> emoji format with :name:
-        .replace(/<a?(:\w*:)\d{15,}>/gm, "$1")
+        .replace(/<:\w+:(\d+)>/gm, (emoji) => emoji.split(':')[1])
+        // replace emojis with readable names (e.g. :cat:), and convert some common smileys into emojis
+        // because emoji-js supports more smileys than old phones do
+        .replace(/:\)/g, ":slight_smile:")
+        .replace(/:\(/g, ":slight_frown:")
+        .replace(/:3/g, ":cat:")
+        .replace(/:D/g, ":smiley:")
+        .replace(/'-\)/g, ":sweat_smile:")
+        .replace(/;-\)/g, ":wink:")
+        .replace(/;-\(/g, ":sob:")
+        .replace(/xD/g, ":laughing:")
+        .replace(/XD/g, ":laughing:")
+        .replace(/:-P/g, ":stuck_out_tongue:")
+        .replace(/:-p/g, ":stuck_out_tongue:")
+        .replace(/:P/g, ":stuck_out_tongue:")
+        .replace(/:p/g, ":stuck_out_tongue:")
+        .replace(/;-P/g, ":stuck_out_tongue_winking_eye:")
+        .replace(/;-p/g, ":stuck_out_tongue_winking_eye:")
+        .replace(/;P/g, ":stuck_out_tongue_winking_eye:")
+        .replace(/;p/g, ":stuck_out_tongue_winking_eye:")
+        .replace(/<3/g, ":heart:");
 
-    // Replace Unicode emojis with :name: textual representations
-    emoji.colons_mode = true;
     result = emoji.replace_unified(result);
-
-    // Replace regional indicator emojis with textual representations
-    result = result.replace(/\ud83c[\udde6-\uddff]/g, match => {
-        return ":regional_indicator_"
-            + String.fromCharCode(match.charCodeAt(1) - 0xdde6 + 97)
-            + ":";
-    })
-
     return result;
 }
 
-function getDefaultLayout(req, res) {
-    if (res.locals.format == 'wml') return 2;
+function makeGetTokenMiddleware(isOptional) {
+    return (req, res, next) => {
+        res.locals.token = req.query?.t ?? req.query?.token ?? req.body?.t ?? req.body?.token ?? req.cookies?.dwtoken;
 
-    // modern layout for modern browsers
-    const ua = (req.headers['user-agent'] ?? '').toLowerCase();
-    if (ua.includes('webkit') || ua.includes('gecko')) return 4;
-
-    return 0;
-}
-
-function getToken(req, res, next) {
-    try {
-        res.locals.token = req.query?.token ?? req.body?.token ?? req.cookies?.dwtoken;
-
-        if (!res.locals.token) throw new Error("Your request does not contain a token. Please return to the Discord WAP front page and try again.");
+        if (!res.locals.token) {
+            if (isOptional) {
+                res.locals.token = "";
+                res.locals.compressedToken = "";
+                res.locals.tokenParam = "";
+                next();
+                return;
+            } else {
+                throw new Error("Your request does not contain a token. Please return to the Discord WAP front page and try again.");
+            }
+        }
 
         if (process.env.PASSWORD && process.env.PASSWORD_TOKEN && res.locals.token == process.env.PASSWORD) {
             res.locals.token = process.env.PASSWORD_TOKEN;
         }
 
         res.locals.userID = res.locals.token.split('.')[0];
-
-        if (req.query.cn) {
-            // ?cn=example is a shorthand for ?cname=%23example (guild channel with #)
-            res.locals.channelName = "#" + req.query.cn;
-        }
-        else if (req.query.dn) {
-            // ?dn=example is a shorthand for ?cname=%40example (dm user with @)
-            res.locals.channelName = "@" + req.query.dn;
-        }
-        else {
-            res.locals.channelName = req.query.cname ?? req.body?.cname ?? "Discord WAP";
-        }
 
         if (req.query.s0) {
             res.locals.token = res.locals.token.split('.').slice(0, 3).join('.')
@@ -449,11 +341,20 @@ function getToken(req, res, next) {
                 + '.' + req.query.s4
                 + '.' + req.query.s5
                 + '.' + req.query.s6
-                + '.' + req.query.s7;
+                + '.' + req.query.s7
+                + '.' + req.query.s8;
         }
         const settingsArr = res.locals.token.split('.').slice(3);
 
-        let messageLoadCount = Number(settingsArr[0]) || 10;
+        const themeIndex = Number(settingsArr[7]);
+
+        if (themeIndex >= 0 && themeIndex < themes.length) {
+            res.locals.theme = themes[themeIndex];
+        }
+
+        res.locals.format = (res.locals.theme.id == 'wml') ? 'wml' : 'html';
+
+        let messageLoadCount = Number(settingsArr[0]) || res.locals.theme.messageCountDefault;
         if (messageLoadCount > 100) messageLoadCount = 100;
         else if (messageLoadCount < 1) messageLoadCount = 1;
 
@@ -463,33 +364,24 @@ function getToken(req, res, next) {
         if (timeOffsetHours > 14) timeOffsetHours = 14;
         if (![0, 15, 30, 45].includes(timeOffsetMinutes)) timeOffsetMinutes = 0;
 
-        let layout = Number(settingsArr[7]);
-        if (![0, 1, 2, 3, 4, 5].includes(layout)) {
-            layout = getDefaultLayout(req, res);
-        }
-        res.locals.format = (layout == 2) ? 'wml' : 'html';
-
         res.locals.settings = {
             messageLoadCount,
-            altChannelListLayout: (Number(settingsArr[1]) || 0) != 0,
+            channelListLayout: ['default', 'recent', 'collapsed'][(Number(settingsArr[1]) || 0)],
             timeOffsetHours,
             timeOffsetMinutes,
             use12hTime: (Number(settingsArr[4]) || 0) != 0,
             limitTextBoxSize: (Number(settingsArr[5]) || 0) != 0,
-            reverseChat: (Number(settingsArr[6]) || 0) != 0 || layout == 4 || layout == 5,
-            layout: ['standard', 'compact', 'wml', 'dark', 'modern', 'modern-dark'][layout],
-            cssFile: ['style.css', 'style-compact.css', '', 'style-dark.css', 'style.css', 'style-dark.css'][layout],
-            channelCssFile: [null, null, null, null, 'channel.css', 'channel-dark.css'][layout],
-            compact: (layout == 1),
-            modern: (layout == 4 || layout == 5),
-            dark: (layout == 3 || layout == 5),
+            reverseChat: (Number(settingsArr[6] ?? res.locals.theme.messagesOnBottomDefault)) != 0,
+            useAnyAscii: (Number(settingsArr[8] ?? (res.locals.format == 'wml'))) != 0,
         }
+
+        res.locals.authToken = decompressToken(res.locals.token).split('.').slice(0, 3).join('.');
 
         res.locals.headers = {
             "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0",
             "Accept": "*/*",
             "Accept-Language": "en-US,en;q=0.5",
-            "Authorization": decompressToken(res.locals.token).split('.').slice(0, 3).join('.'),
+            "Authorization": res.locals.authToken,
             "X-Discord-Locale": "en-GB",
             "X-Debug-Options": "bugReporterEnabled",
             "Sec-Fetch-Dest": "empty",
@@ -499,12 +391,14 @@ function getToken(req, res, next) {
         if (req.cookies?.dwtoken != res.locals.token) {
             res.cookie('dwtoken', res.locals.token, { maxAge: 1000 * 60 * 60 * 24 * 30 });
         }
+        res.locals.compressedToken = compressToken(res.locals.token);
+        res.locals.tokenParam = '?t=' + res.locals.compressedToken;
         next();
     }
-    catch (e) {
-        handleError(res, e);
-    }
 }
+
+const getToken = makeGetTokenMiddleware(false);
+const getTokenOptional = makeGetTokenMiddleware(true);
 
 async function fetchDMs(req, res) {
     const dmsGet = await axios.get(
@@ -524,190 +418,317 @@ async function fetchDMs(req, res) {
         .map(ch => {
             const result = {
                 id: compressID(ch.id),
-                // type: ch.type,
-                // last_message_id: ch.last_message_id
             }
 
             // Add group name for group DMs, recipient name for normal DMs
+            let cacheName;
             result.isGroup = (ch.type == 3);
             if (result.isGroup) {
-                result.name = ch.name;
+                result.name = ch.name ?? ch.recipients.map(rec => rec.global_name ?? rec.username).join(", ");
+                cacheName = result.name;
             } else {
                 result.name = ch.recipients[0].global_name ?? ch.recipients[0].username;
+                cacheName = '@' + result.name;
             }
-            result.name = oneLine(req, result.name);
+
+            // populate cache
+            channelNameCache.set(ch.id, cacheName);
+
+            result.name = normalizeStripEmoji(req, result.name);
             return result;
         })
 }
 
-app.use(cookieParser());
-
 app.use((req, res, next) => {
-    const accept = req.headers['accept'] ?? '';
-    res.locals.format = accept.includes('html') ? "html" : "wml";
+    res.locals.format = req.accepts("html") ? "html" : "wml";
+    res.locals.theme = getDefaultTheme(req, res);
     next();
 })
 
-function render(res, viewName, viewVars) {
+async function render(res, viewName, viewVars = {}) {
     if (res.locals.format == "wml") res.set("Content-Type", "text/vnd.wap.wml");
 
-    res.render(`${res.locals.format}/${viewName}`, {
+    const rendered = await ejs.renderFile(`views/${res.locals.theme.viewsDir}/${viewName}.ejs`, {
+        ...res.locals,
         settings: res.locals.settings,
         ...viewVars
-    });
+    })
+
+    // Don't minify for WML, causes WMLC compilation error
+    const minified = (res.locals.format == "wml") ? rendered :
+        await minify(rendered, {
+            collapseWhitespace: true,
+            removeComments: true,
+            minifyCSS: true,
+            minifyJS: true
+        });
+
+    res.send(minified);
 }
 
-const index = (req, res) => {
+function getGuildPath(guildID) {
+    return guildID ? `/g/${guildID}/c` : `/d`;
+}
+
+app.get("/", (req, res) => {
     render(res, "index", {
         userAgent: req.headers['user-agent']
     });
-}
-app.get("/wap", index);
-app.get("/wap/", index);
+});
 
-app.get("/wap/about", (req, res) => {
+app.get("/about", getTokenOptional, (req, res) => {
     render(res, "about", {
         userAgent: req.headers['user-agent']
     });
 })
 
 // Main menu (including DMs in WML version)
-app.get("/wap/main", getToken, async (req, res) => {
-    try {
-        const dms = (res.locals.format == 'wml') && await fetchDMs(req, res);
-
-        render(res, "main", {
-            token: compressToken(res.locals.token),
-            dms,
-        });
-    }
-    catch (e) { handleError(res, e) }
+app.get("/main", getToken, async (req, res) => {
+    render(res, "main", {
+        dms: (res.locals.format == 'wml') && await fetchDMs(req, res),
+    });
 })
 
 // Direct message list (separate page for HTML version)
-app.get("/wap/dm", getToken, async (req, res) => {
-    try {
-        const dms = await fetchDMs(req, res);
-
-        render(res, "dms", {
-            token: compressToken(res.locals.token),
-            dms,
-        });
-    }
-    catch (e) { handleError(res, e) }
+app.get("/d", getToken, async (req, res) => {
+    res.locals.dms = await fetchDMs(req, res);
+    render(res, "dms");
 })
 
-const guildCache = new LRUCache({ max: 200, ttl: 10 * 60 * 1000, updateAgeOnGet: false })
+// Inbox (mentions and received DMs)
+app.get("/i", getToken, async (req, res) => {
+    let notifications = await getNotifications(res.locals.authToken);
 
-// Server list
-app.get("/wap/gl", getToken, async (req, res) => {
-    try {
-        let guilds;
+    notifications.sort((a, b) => {
+        // DMs first
+        if (!a.guildName && b.guildName) return -1;
+        if (!b.guildName && a.guildName) return 1;
 
-        if (guildCache.has(res.locals.userID)) {
-            guilds = guildCache.get(res.locals.userID);
-        } else {
-            const guildsGet = await axios.get(
-                `${DEST_BASE}/users/@me/guilds`,
+        // otherwise sort by channel name alphabetically
+        if (a.channelName < b.channelName) return -1;
+        if (b.channelName < a.channelName) return 1;
+        return 0;
+    });
+
+    notifications = notifications.map(n => ({
+        ...n,
+        path: n.guildName ?
+            `/g/${compressID(n.guildID)}/c/${compressID(n.channelID)}` :
+            `/d/${compressID(n.channelID)}`
+    }))
+
+    render(res, "inbox", {
+        notifications,
+        compressID
+    });
+})
+
+const guildCache = new LRUCache({ max: 500, ttl: 60 * 60 * 1000, updateAgeOnGet: false });
+
+async function getGuilds(req, res) {
+    if (guildCache.has(res.locals.userID)) {
+        return guildCache.get(res.locals.userID);
+    } else {
+        const guildsGet = await axios.get(
+            `${DEST_BASE}/users/@me/guilds`,
+            { headers: res.locals.headers }
+        );
+
+        let guildPositions = [];
+        try {
+            // Get user settings which contains the order of servers
+            const userSettingsGet = await axios.get(
+                `${DEST_BASE}/users/@me/settings`,
                 { headers: res.locals.headers }
-            )
-            guilds = guildsGet.data.map(g => ({
-                id: compressID(g.id),
-                name: oneLine(req, g.name)
-            }))
-            guildCache.set(res.locals.userID, guilds);
+            );
+            guildPositions = userSettingsGet.data?.guild_positions ||
+                userSettingsGet.data?.guild_folders?.flatMap(f => f.guild_ids || []) ||
+                [];
+        } catch (e) {
+            console.warn("Could not fetch user guild positions:", e?.message);
         }
 
-        render(res, "guilds", {
-            guilds
+        // Sort guilds by the order specified in user settings
+        const guilds = (guildsGet.data || []).map(g => {
+            const index = Array.isArray(guildPositions) ? guildPositions.indexOf(g.id) : -1;
+            return {
+                id: compressID(g.id),
+                name: normalizeStripEmoji(req, g.name),
+                position: (index !== -1) ? index : 999
+            };
         });
+        guilds.sort((a, b) => a.position - b.position);
+
+        guildCache.set(res.locals.userID, guilds);
+        return guilds;
     }
-    catch (e) { handleError(res, e) }
+}
+
+async function getGuildName(req, res, guildID) {
+    if (!guildID) return "Direct Messages";
+
+    const decompressedID = decompressID(guildID, "server");
+
+    // Fetch from cache or API
+    const guilds = await getGuilds(req, res);
+    const guild = guilds.find(g => g.id == guildID);
+    if (!guild) return "(unknown)";
+    return guild.name;
+}
+
+// Server list
+app.get("/g", getToken, async (req, res) => {
+    const guilds = await getGuilds(req, res);
+
+    const pageSize = res.locals.theme.guildsPageSize;
+    const pageBegin = Number(req.query.p ?? 0);
+    const pageEnd = pageBegin + pageSize;
+
+    res.locals.hasMoreAbove = (pageBegin != 0);
+    res.locals.hasMoreBelow = (guilds.length > pageEnd);
+    res.locals.nextPage = pageEnd;
+    res.locals.previousPage = Math.max(0, pageBegin - pageSize);
+    res.locals.guilds = guilds.slice(pageBegin, pageEnd);
+
+    render(res, "guilds");
 })
 
 const channelCache = new LRUCache({ max: 400, ttl: 10 * 60 * 1000, updateAgeOnGet: false });
 
-// Channel list of a server
-app.get("/wap/g", getToken, async (req, res) => {
-    try {
-        // Channel list cache can be used if last message IDs are not relevant ("Recent channels first" disabled and using HTML version)
-        const useCache = (!res.locals.settings.altChannelListLayout && res.locals.format == 'html')
-        let channelsGet;
+async function getChannels(req, res, guildID, useCache) {
+    if (!guildID) guildID = res.locals.userID;
 
-        if (useCache && channelCache.has(req.query.id)) {
-            channelsGet = channelCache.get(req.query.id);
-        } else {
-            channelsGet = await axios.get(
-                `${DEST_BASE}/guilds/${decompressID(req.query.id, 'server')}/channels`,
-                { headers: res.locals.headers }
-            )
-            if (useCache) channelCache.set(req.query.id, channelsGet);
-        }
+    if (useCache && channelCache.has(guildID)) {
+        return channelCache.get(guildID);
+    } else {
+        const channels = await axios.get(
+            `${DEST_BASE}/guilds/${decompressID(guildID, 'server')}/channels`,
+            { headers: res.locals.headers }
+        )
+        if (useCache) channelCache.set(guildID, channels.data);
 
-        const serverId = decompressID(req.query.id, 'server');
-
-        // Populate channel name and guild cache
-        channelsGet.data.forEach(ch => {
-            channelNameCache.set(ch.id, ch.name);
-            channelGuildCache.set(ch.id, serverId);
+        // Populate channel name cache
+        channels.data.forEach(ch => {
+            channelNameCache.set(ch.id, '#' + ch.name);
         })
+        return channels.data;
+    }
+}
 
-        // Due to page length limitations, limit the amount of channels to be shown:
+async function getChannelName(req, res, guildID, channelID) {
+    const decompressedID = decompressID(channelID, "channel");
 
-        // Sort channels by most recently used
-        const allChannels = channelsGet.data.filter(ch => ch.type == 0 || ch.type == 5);
-        allChannels.sort((a, b) => {
-            const a_id = BigInt(a.last_message_id ?? 0);
-            const b_id = BigInt(b.last_message_id ?? 0);
-            return (a_id < b_id ? 1 : a_id > b_id ? -1 : 0)
-        });
+    let cachedName = channelNameCache.get(decompressedID);
+    if (cachedName) return cachedName;
 
-        let channels;
+    if (guildID) {
+        const channels = await getChannels(req, res, guildID, true);
+        const channel = channels.find(c => c.id == decompressedID);
+        if (!channel) return "(unknown)";
+        return '#' + channel.name;
+    } else {
+        const dmChannels = await fetchDMs(req, res);
+        cachedName = channelNameCache.get(decompressedID);
+        if (!cachedName) return "(unknown)";
+        return cachedName;
+    }
+}
 
-        if (res.locals.settings.altChannelListLayout) {
-            // "Recent channels first" option enabled: show up to 15 (WML) or 30 (HTML) channels in order of most recent message
-            channels = allChannels
-                .slice(0, (res.locals.format == 'wml') ? 15 : 30)
-                .map(ch => ({
-                    id: compressID(ch.id),
-                    name: oneLine(req, ch.name),
-                    label: oneLine(req, getIdTimestamp(res, ch.last_message_id) + ' ' + ch.name)
-                }))
+// Channel list of a server
+app.get(["/g/:guildid", "/g/:guildid/c"], getToken, async (req, res) => {
+    const guildID = req.params.guildid;
+    const guildName = await getGuildName(req, res, guildID);
+
+    // Channel list cache can be used if last message IDs are not relevant ("Recent channels first" disabled and using HTML version)
+    const useCache = (res.locals.settings.channelListLayout != 'recent' && res.locals.format == 'html');
+
+    const channelsGet = await getChannels(req, res, guildID, useCache);
+
+    // Due to page length limitations, limit the amount of channels to be shown:
+
+    // Sort channels by most recently used
+    const allChannels = channelsGet.filter(ch => ch.type == 0 || ch.type == 5);
+    allChannels.sort((a, b) => {
+        const a_id = BigInt(a.last_message_id ?? 0);
+        const b_id = BigInt(b.last_message_id ?? 0);
+        return (a_id < b_id ? 1 : a_id > b_id ? -1 : 0)
+    });
+
+    let channels;
+
+    if (res.locals.settings.channelListLayout == 'recent') {
+        // "Recent channels first" option enabled: show up to 15 (WML) or 30 (HTML) channels in order of most recent message
+        channels = allChannels
+            .slice(0, (res.locals.format == 'wml') ? 15 : 30)
+            .map(ch => ({
+                id: compressID(ch.id),
+                name: normalizeStripEmoji(req, ch.name),
+                label: normalizeStripEmoji(req, getIdTimestamp(res, ch.last_message_id) + ' ' + ch.name),
+                timestamp: getIdTimestamp(res, ch.last_message_id),
+                parent_id: ch.parent_id
+            }))
+    } else {
+        // "Recent channels first" disabled: show channels in their original order
+        // (still only show 15 most recently used channels in WML when not in collapsed mode)
+        if (res.locals.format == 'wml' && res.locals.settings.channelListLayout != 'collapsed') {
+            const recentChannelIDs = allChannels
+                .slice(0, 15)
+                .map(ch => ch.id);
+
+            // Also, channels with certain names will always be shown, because those are channels that people might often want to visit.
+            const whitelistedChannelIDs = allChannels
+                .filter(ch => /^(general|phones|off\S*topic|discord-j2me-wap)$/g.test(ch.name))
+                .map(ch => ch.id);
+
+            const shownChannelIDs = [...new Set([...recentChannelIDs, ...whitelistedChannelIDs])]
+
+            channels = allChannels.filter(ch => shownChannelIDs.includes(ch.id));
         } else {
-            // "Recent channels first" disabled: show channels in their original order (still only show 15 most recently used channels in WML)
-            if (res.locals.format == 'wml') {
-                const recentChannelIDs = allChannels
-                    .slice(0, 15)
-                    .map(ch => ch.id);
-
-                // Also, channels with certain names will always be shown, because those are channels that people might often want to visit.
-                const whitelistedChannelIDs = allChannels
-                    .filter(ch => /^(general|phones|off\S*topic|discord-j2me-wap)$/g.test(ch.name))
-                    .map(ch => ch.id);
-
-                const shownChannelIDs = [...new Set([...recentChannelIDs, ...whitelistedChannelIDs])]
-
-                channels = allChannels.filter(ch => shownChannelIDs.includes(ch.id));
-            } else {
-                channels = allChannels;
-            }
-
-            channels = channels
-                .sort((a, b) => a.position - b.position)
-                .map(ch => ({
-                    id: compressID(ch.id),
-                    name: oneLine(req, ch.name),
-                    label: oneLine(req, '#' + ch.name)
-                }))
+            channels = allChannels;
         }
 
-        render(res, "channels", {
-            gname: req.query.gname,
-            gid: req.query.id,
-            channels
-        });
+        channels = channels
+            .sort((a, b) => a.position - b.position)
+            .map(ch => ({
+                id: compressID(ch.id),
+                name: normalizeStripEmoji(req, ch.name),
+                label: normalizeStripEmoji(req, '#' + ch.name),
+                parent_id: ch.parent_id
+            }))
     }
-    catch (e) { handleError(res, e) }
+
+    const allChannelCategories = channelsGet.filter(ch => ch.type == 4)
+        .sort((a, b) => a.position - b.position)
+        .map(ch => ({
+            ...ch,
+            name: normalizeStripEmoji(req, ch.name),
+            children: []
+        }));
+
+    // default category for channels that are not in any category (shown at the top both on official clients and on wap)
+    const defaultCategory = {
+        name: guildName,
+        children: []
+    };
+    allChannelCategories.unshift(defaultCategory);
+
+    channels.forEach(ch => {
+        const cat = allChannelCategories.find(cat => cat.id == ch.parent_id);
+        if (cat) {
+            cat.children.push(ch);
+        } else {
+            defaultCategory.children.push(ch);
+        }
+    })
+
+    const channelCategories = allChannelCategories.filter(ch => ch.children.length);
+
+    render(res, "channels", {
+        gname: guildName,
+        gid: guildID,
+        channels,
+        channelCategories
+    });
 })
 
 // ported from discord j2me
@@ -722,348 +743,379 @@ function shouldShowAuthor(msg, above, clusterStart) {
 }
 
 // Get channel messages
-app.get("/wap/ch", getToken, async (req, res) => {
-    try {
-        let proxyUrl = `${DEST_BASE}/channels/${decompressID(req.query.id, 'channel')}/messages`;
-        let queryParam = [`limit=${res.locals.settings.messageLoadCount}`];
-        if (req.query.before) queryParam.push(`before=${decompressID(req.query.before, 'message')}`);
-        if (req.query.after) queryParam.push(`after=${decompressID(req.query.after, 'message')}`);
-        proxyUrl += '?' + queryParam.join('&');
+app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? (req.query.gid && req.query.gid !== '@me' ? req.query.gid : undefined);
+    const channelID = req.params.channelid ?? req.query.id ?? req.body.id;
+    const guildName = await getGuildName(req, res, guildID);
+    const guildPath = getGuildPath(guildID);
+    const channelName = await getChannelName(req, res, guildID, channelID);
 
-        const messagesGet = await axios.get(proxyUrl, { headers: res.locals.headers });
-
-        // Populate username and message cache
-        const rawUserId = getRawUserIdFromToken(res.locals.token);
-        messagesGet.data.forEach(msg => {
-            userCache.set(msg.author.id, msg.author.username);
-            const compressedId = compressID(msg.id);
-            const isOwn = Boolean(msg.author && (msg.author.id === rawUserId || compressID(msg.author.id) === res.locals.userID));
-            messageCache.set(compressedId, {
-                id: compressedId,
-                rawId: msg.id,
-                authorName: msg.author?.global_name ?? msg.author?.username ?? "Unknown",
-                authorId: msg.author?.id,
-                isOwn,
-                content: parseMessageContent(res, msg),
-                rawContent: msg.content || "",
-                links: extractLinks(msg.content)
-            });
-        });
-
-        // See which messages the author line and profile pic should be shown for
-        messagesGet.data.reverse();
-        let clusterStart = 0;
-        let above = null;
-
-        messagesGet.data.forEach(m => {
-            m.showAuthor = shouldShowAuthor(m, above, clusterStart);
-            if (m.showAuthor) {
-                clusterStart = m.id;
-
-                if (m.author?.id && m.author?.avatar) {
-                    m.avatar = `http://media.discordapp.net/avatars/${m.author.id}/${m.author.avatar}.png?size=16`
-                }
-            }
-            above = m;
-        })
-        messagesGet.data.reverse();
-
-        const messages = messagesGet.data.map(m => parseMessageObject(req, res, m));
-
-        if (res.locals.settings.reverseChat && res.locals.format == 'html') {
-            messages.reverse();
-        }
-
-        const rawChannelId = decompressID(req.query.id, 'channel');
-        if (req.query.gid) {
-            try {
-                channelGuildCache.set(rawChannelId, decompressID(req.query.gid, 'server'));
-            } catch (e) {
-                channelGuildCache.set(rawChannelId, req.query.gid);
-            }
-        }
-
-        render(res, res.locals.settings.modern ? "channelNew" : "channel", {
-            id: req.query.id,
-            gid: req.query.gid ?? (channelGuildCache.has(rawChannelId) ? compressID(channelGuildCache.get(rawChannelId)) : undefined),
-            page: req.query.page ?? 0,
-            messages,
-            textBoxSize: res.locals.settings.limitTextBoxSize ? 200 : 2000,
-            cname: res.locals.channelName,
-        });
+    const rawChannelId = decompressID(channelID, 'channel');
+    if (guildID) {
+        channelGuildCache.set(rawChannelId, decompressID(guildID, 'server'));
     }
-    catch (e) { handleError(res, e) }
-})
 
-app.get("/wap/send", getToken, async (req, res) => {
-    render(res, "send", {
-        id: req.query.id,
-        cname: res.locals.channelName,
-        token: req.query.token,
-    })
-})
+    let proxyUrl = `${DEST_BASE}/channels/${rawChannelId}/messages`;
+    let queryParam = [`limit=${res.locals.settings.messageLoadCount}`];
+    if (req.query.b) queryParam.push(`before=${decompressID(req.query.b, 'message')}`);
+    if (req.query.a) queryParam.push(`after=${decompressID(req.query.a, 'message')}`);
+    proxyUrl += '?' + queryParam.join('&');
 
-app.get("/wap/reply", getToken, async (req, res) => {
-    render(res, "reply", {
-        id: req.query.id,
-        cname: res.locals.channelName,
-        token: req.query.token,
-        rec: req.query.rec,
-        recname: req.query.recname,
-    })
-})
+    const messagesGet = (await axios.get(proxyUrl, { headers: res.locals.headers })).data;
 
-app.post("/wap/send", upload.single('file'), getToken, async (req, res) => {
-    try {
-        const idParam = req.body?.id ?? req.query?.id;
-        const channelId = decompressID(idParam, 'channel');
-
-        let attachments;
-        if (req.file) {
-            const attachmentRes = await axios.post(
-                `${DEST_BASE}/channels/${channelId}/attachments`,
-                {
-                    files: [{
-                        filename: req.file.originalname,
-                        file_size: req.file.size,
-                        id: "0",
-                        is_clip: false,
-                        original_content_type: req.file.mimetype || "application/octet-stream"
-                    }]
-                },
-                { headers: res.locals.headers }
-            );
-
-            const uploadData = attachmentRes.data.attachments[0];
-            const uploadUrl = uploadData.upload_url;
-            const uploadFilename = uploadData.upload_filename;
-
-            await axios.put(uploadUrl, req.file.buffer, {
-                headers: {
-                    'Content-Type': req.file.mimetype || 'application/octet-stream',
-                    'Content-Length': req.file.size
-                }
-            });
-
-            attachments = [{
-                id: "0",
-                filename: req.file.originalname,
-                original_content_type: req.file.mimetype || "application/octet-stream",
-                uploaded_filename: uploadFilename
-            }];
-        }
-
-        const send = {
-            content: req.body?.text || "",
-            flags: 0,
-            mobile_network_type: "unknown",
-            tts: false
-        };
-        if (attachments) {
-            send.attachments = attachments;
-        }
-        if (req.body?.recipient) {
-            send.message_reference = {
-                message_id: String(decompressID(req.body.recipient, 'message'))
-            }
-        }
-        if (Number(req.body?.ping) == 0) {
-            send.allowed_mentions = {
-                replied_user: false
-            }
-        }
-
-        await axios.post(
-            `${DEST_BASE}/channels/${channelId}/messages`,
-            send,
-            { headers: res.locals.headers }
-        );
-
-        render(res, "sent", {
-            fromChatBar: req.body?.fromchatbar,
-            cname: res.locals.channelName
-        });
-    }
-    catch (e) { handleError(res, e) }
-})
-
-app.all("/wap/msg", getToken, async (req, res) => {
-    try {
-        const idParam = req.query.id ?? req.body.id;
-        const msgidParam = req.query.msgid ?? req.body.msgid;
-        const gidParam = req.query.gid ?? req.body.gid;
-
-        let cached = messageCache.get(msgidParam);
-        let authorName = cached?.authorName ?? req.query.recname ?? req.body.recname ?? "Unknown";
-        let isOwn = cached?.isOwn ?? (req.query.isOwn === '1');
-        let content = cached?.content ?? (req.query.content ? sanitize(req.query.content) : "");
-        let rawContent = cached?.rawContent ?? req.query.rawContent ?? "";
-        let links = cached?.links ?? extractLinks(rawContent);
-
-        const rawChannelId = decompressID(idParam, 'channel');
-        const rawMessageId = decompressID(msgidParam, 'message');
-
-        let rawServerId = '@me';
-        if (gidParam && gidParam !== '@me') {
-            try {
-                rawServerId = decompressID(gidParam, 'server');
-            } catch (e) {
-                rawServerId = gidParam;
-            }
-        } else if (channelGuildCache.has(rawChannelId)) {
-            rawServerId = channelGuildCache.get(rawChannelId);
-        }
-
-        render(res, "msg", {
-            id: idParam,
-            msgid: msgidParam,
-            gid: gidParam,
-            cname: res.locals.channelName,
-            authorName,
+    // Populate username and message cache
+    const rawUserId = getRawUserIdFromToken(res.locals.token);
+    messagesGet.forEach(msg => {
+        userCache.set(msg.author.id, msg.author.username);
+        const compressedId = compressID(msg.id);
+        const isOwn = Boolean(msg.author && (msg.author.id === rawUserId || compressID(msg.author.id) === res.locals.userID));
+        messageCache.set(compressedId, {
+            id: compressedId,
+            rawId: msg.id,
+            authorName: msg.author?.global_name ?? msg.author?.username ?? "Unknown",
+            authorId: msg.author?.id,
             isOwn,
-            content,
-            rawContent,
-            links,
-            rec: msgidParam,
-            recname: authorName,
-            token: compressToken(res.locals.token),
+            content: parseMessageContent(res, msg),
+            rawContent: msg.content || "",
+            links: extractLinks(msg.content)
         });
-    } catch (e) {
-        handleError(res, e);
-    }
-});
-
-app.all("/wap/share", getToken, async (req, res) => {
-    try {
-        const idParam = req.query.id ?? req.body.id;
-        const msgidParam = req.query.msgid ?? req.body.msgid;
-        const gidParam = req.query.gid ?? req.body.gid;
-
-        let cached = messageCache.get(msgidParam);
-        let authorName = cached?.authorName ?? req.query.recname ?? req.body.recname ?? "Unknown";
-        let rawContent = cached?.rawContent ?? req.query.rawContent ?? "";
-
-        const rawChannelId = decompressID(idParam, 'channel');
-        const rawMessageId = decompressID(msgidParam, 'message');
-
-        let rawServerId = '@me';
-        if (gidParam && gidParam !== '@me') {
-            try {
-                rawServerId = decompressID(gidParam, 'server');
-            } catch (e) {
-                rawServerId = gidParam;
-            }
-        } else if (channelGuildCache.has(rawChannelId)) {
-            rawServerId = channelGuildCache.get(rawChannelId);
-        }
-
-        const messageLink = `https://discord.com/channels/${rawServerId}/${rawChannelId}/${rawMessageId}`;
-        const shareLinkUrl = `sms:?body=${messageLink}`;
-        const shareTextUrl = `sms:?body=${encodeURIComponent(rawContent)}`;
-
-        render(res, "share", {
-            id: idParam,
-            msgid: msgidParam,
-            gid: gidParam,
-            cname: res.locals.channelName,
-            authorName,
-            rawContent,
-            messageLink,
-            shareLinkUrl,
-            shareTextUrl,
-            token: compressToken(res.locals.token),
-        });
-    } catch (e) {
-        handleError(res, e);
-    }
-});
-
-app.get("/wap/edit", getToken, async (req, res) => {
-    try {
-        const idParam = req.query.id;
-        const msgidParam = req.query.msgid;
-
-        let cached = messageCache.get(msgidParam);
-        let isOwn = cached ? cached.isOwn : (req.query.isOwn === '1');
-        let rawContent = cached ? cached.rawContent : (req.query.rawContent ?? "");
-
-        if (!isOwn) {
-            throw new Error("Access denied. You can only edit your own messages.");
-        }
-
-        render(res, "edit", {
-            id: idParam,
-            msgid: msgidParam,
-            cname: res.locals.channelName,
-            text: rawContent,
-            token: compressToken(res.locals.token),
-            textBoxSize: res.locals.settings.limitTextBoxSize ? 200 : 2000,
-        });
-    } catch (e) {
-        handleError(res, e);
-    }
-});
-
-app.post("/wap/edit", getToken, async (req, res) => {
-    try {
-        const channelId = decompressID(req.body.id, 'channel');
-        const messageId = decompressID(req.body.msgid, 'message');
-
-        await axios.patch(
-            `${DEST_BASE}/channels/${channelId}/messages/${messageId}`,
-            { content: req.body.text },
-            { headers: res.locals.headers }
-        );
-
-        if (messageCache.has(req.body.msgid)) {
-            const cached = messageCache.get(req.body.msgid);
-            cached.rawContent = req.body.text;
-            cached.content = parseMessageContentText(req.body.text);
-            cached.links = extractLinks(req.body.text);
-            messageCache.set(req.body.msgid, cached);
-        }
-
-        render(res, "sent", {
-            fromChatBar: req.body.fromchatbar,
-            cname: res.locals.channelName,
-            messageText: "Message edited!"
-        });
-    } catch (e) {
-        handleError(res, e);
-    }
-});
-
-app.all("/wap/delete", getToken, async (req, res) => {
-    try {
-        const idParam = req.body.id ?? req.query.id;
-        const msgidParam = req.body.msgid ?? req.query.msgid;
-
-        const channelId = decompressID(idParam, 'channel');
-        const messageId = decompressID(msgidParam, 'message');
-
-        await axios.delete(
-            `${DEST_BASE}/channels/${channelId}/messages/${messageId}`,
-            { headers: res.locals.headers }
-        );
-
-        messageCache.delete(msgidParam);
-
-        render(res, "sent", {
-            fromChatBar: req.body.fromchatbar,
-            cname: res.locals.channelName,
-            messageText: "Message deleted!"
-        });
-    } catch (e) {
-        handleError(res, e);
-    }
-});
-
-app.get("/wap/set", getToken, (req, res) => {
-    render(res, "settings", {
-        token: req.query.token
     });
+
+    // Message ID that should be marked as read
+    // (don't mark as read if reading an older page of messages)
+    const markReadID = !req.query.p && messagesGet.length && messagesGet[0].id;
+
+    // See which messages the author line and profile pic should be shown for
+    if (res.locals.settings.reverseChat && res.locals.format == 'html') {
+        messagesGet.reverse();
+    }
+    let clusterStart = 0;
+    let above = null;
+
+    messagesGet.forEach(m => {
+        m.showAuthor = shouldShowAuthor(m, above, clusterStart);
+        if (m.showAuthor) {
+            clusterStart = m.id;
+
+            if (m.author?.id && m.author?.avatar) {
+                m.avatar = `http://media.discordapp.net/avatars/${m.author.id}/${m.author.avatar}.png?size=16`
+            }
+        }
+        above = m;
+    })
+
+    const messages = messagesGet.map(m => parseMessageObject(req, res, m));
+
+    render(res, "channel", {
+        page: req.query.p ?? 0,
+        messages,
+        textBoxSize: res.locals.settings.limitTextBoxSize ? 200 : 2000,
+        id: channelID,
+        cname: channelName,
+        gid: guildID,
+        gname: guildName,
+        gpath: guildPath,
+    });
+
+    // Mark latest message as read
+    if (markReadID) {
+        axios.post(
+            `${DEST_BASE}/channels/${rawChannelId}/messages/${markReadID}/ack`,
+            { token: null },
+            { headers: res.locals.headers }
+        )
+            .catch(e => {
+                console.log(e);
+            })
+    }
+})
+
+app.get(["/d/:channelid/send", "/g/:guildid/c/:channelid/send", "/wap/send"], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.query.gid;
+    const channelID = req.params.channelid ?? req.query.id;
+    const guildPath = getGuildPath(guildID);
+    const channelName = await getChannelName(req, res, guildID, channelID);
+
+    render(res, "send", {
+        id: channelID,
+        cname: channelName,
+        gid: guildID,
+        gpath: guildPath
+    })
+})
+
+app.get(["/d/:channelid/reply/:messageid", "/g/:guildid/c/:channelid/reply/:messageid", "/wap/reply"], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.query.gid;
+    const channelID = req.params.channelid ?? req.query.id;
+    const messageID = req.params.messageid ?? req.query.rec;
+    const guildPath = getGuildPath(guildID);
+    const channelName = await getChannelName(req, res, guildID, channelID);
+
+    let recname = req.query.recname;
+    if (!recname && messageCache.has(messageID)) {
+        recname = messageCache.get(messageID).authorName;
+    }
+
+    render(res, "reply", {
+        id: channelID,
+        cname: channelName,
+        rec: messageID,
+        gid: guildID,
+        gpath: guildPath,
+        recname: recname ?? "Unknown",
+    })
+})
+
+// Send message (with attachment support)
+app.post(["/d/:channelid/send", "/g/:guildid/c/:channelid/send", "/wap/send"], upload.single('file'), getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.body?.gid ?? req.query?.gid;
+    const channelID = req.params.channelid ?? req.body?.id ?? req.query?.id;
+    const guildPath = getGuildPath(guildID);
+    const rawChannelId = decompressID(channelID, 'channel');
+
+    let attachments = null;
+    if (req.file) {
+        const attachmentsGet = await axios.post(
+            `${DEST_BASE}/channels/${rawChannelId}/attachments`,
+            {
+                files: [{
+                    filename: req.file.originalname,
+                    file_size: req.file.size,
+                    id: "0"
+                }]
+            },
+            { headers: res.locals.headers }
+        );
+
+        const uploadUrl = attachmentsGet.data.attachments[0].upload_url;
+        const uploadFilename = attachmentsGet.data.attachments[0].upload_filename;
+
+        await axios.put(uploadUrl, req.file.buffer, {
+            headers: {
+                'Content-Type': req.file.mimetype || 'application/octet-stream',
+                'Content-Length': req.file.size
+            }
+        });
+
+        attachments = [{
+            id: "0",
+            filename: req.file.originalname,
+            original_content_type: req.file.mimetype || "application/octet-stream",
+            uploaded_filename: uploadFilename
+        }];
+    }
+
+    const send = {
+        content: req.body?.text || "",
+        flags: 0,
+        mobile_network_type: "unknown",
+        tts: false
+    };
+    if (attachments) {
+        send.attachments = attachments;
+    }
+    if (req.body?.recipient) {
+        send.message_reference = {
+            message_id: String(decompressID(req.body.recipient, 'message'))
+        }
+    }
+    if (Number(req.body?.ping) == 0) {
+        send.allowed_mentions = {
+            replied_user: false
+        }
+    }
+
+    await axios.post(
+        `${DEST_BASE}/channels/${rawChannelId}/messages`,
+        send,
+        { headers: res.locals.headers }
+    );
+
+    res.redirect(`${guildPath}/${channelID}${res.locals.tokenParam}`);
+})
+
+// Message options
+app.all(["/d/:channelid/m/:messageid", "/g/:guildid/c/:channelid/m/:messageid", "/wap/msg"], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.query.gid ?? req.body.gid;
+    const channelID = req.params.channelid ?? req.query.id ?? req.body.id;
+    const messageID = req.params.messageid ?? req.query.msgid ?? req.body.msgid;
+    const guildPath = getGuildPath(guildID);
+    const channelName = await getChannelName(req, res, guildID, channelID);
+
+    let cached = messageCache.get(messageID);
+    let authorName = cached?.authorName ?? req.query.recname ?? req.body.recname ?? "Unknown";
+    let isOwn = cached?.isOwn ?? (req.query.isOwn === '1');
+    let content = cached?.content ?? (req.query.content ?? "");
+    let rawContent = cached?.rawContent ?? req.query.rawContent ?? "";
+    let links = cached?.links ?? extractLinks(rawContent);
+
+    const rawChannelId = decompressID(channelID, 'channel');
+    const rawMessageId = decompressID(messageID, 'message');
+
+    let rawServerId = '@me';
+    if (guildID && guildID !== '@me') {
+        try {
+            rawServerId = decompressID(guildID, 'server');
+        } catch (e) {
+            rawServerId = guildID;
+        }
+    } else if (channelGuildCache.has(rawChannelId)) {
+        rawServerId = channelGuildCache.get(rawChannelId);
+    }
+
+    render(res, "msg", {
+        id: channelID,
+        msgid: messageID,
+        gid: guildID,
+        gpath: guildPath,
+        cname: channelName,
+        authorName,
+        isOwn,
+        content,
+        rawContent,
+        links,
+        rec: messageID,
+        recname: authorName,
+        token: res.locals.compressedToken,
+    });
+});
+
+// Share message
+app.all(["/d/:channelid/m/:messageid/share", "/g/:guildid/c/:channelid/m/:messageid/share", "/wap/share"], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.query.gid ?? req.body.gid;
+    const channelID = req.params.channelid ?? req.query.id ?? req.body.id;
+    const messageID = req.params.messageid ?? req.query.msgid ?? req.body.msgid;
+    const guildPath = getGuildPath(guildID);
+    const channelName = await getChannelName(req, res, guildID, channelID);
+
+    let cached = messageCache.get(messageID);
+    let authorName = cached?.authorName ?? req.query.recname ?? req.body.recname ?? "Unknown";
+    let rawContent = cached?.rawContent ?? req.query.rawContent ?? "";
+
+    const rawChannelId = decompressID(channelID, 'channel');
+    const rawMessageId = decompressID(messageID, 'message');
+
+    let rawServerId = '@me';
+    if (guildID && guildID !== '@me') {
+        try {
+            rawServerId = decompressID(guildID, 'server');
+        } catch (e) {
+            rawServerId = guildID;
+        }
+    } else if (channelGuildCache.has(rawChannelId)) {
+        rawServerId = channelGuildCache.get(rawChannelId);
+    }
+
+    const messageLink = `https://discord.com/channels/${rawServerId}/${rawChannelId}/${rawMessageId}`;
+    const shareLinkUrl = `sms:?body=${encodeURIComponent(messageLink)}`;
+    const shareTextUrl = `sms:?body=${encodeURIComponent(rawContent)}`;
+
+    render(res, "share", {
+        id: channelID,
+        msgid: messageID,
+        gid: guildID,
+        gpath: guildPath,
+        cname: channelName,
+        authorName,
+        rawContent,
+        messageLink,
+        shareLinkUrl,
+        shareTextUrl,
+        token: res.locals.compressedToken,
+    });
+});
+
+// Edit message page
+app.get(["/d/:channelid/m/:messageid/edit", "/g/:guildid/c/:channelid/m/:messageid/edit", "/wap/edit"], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.query.gid;
+    const channelID = req.params.channelid ?? req.query.id;
+    const messageID = req.params.messageid ?? req.query.msgid;
+    const guildPath = getGuildPath(guildID);
+    const channelName = await getChannelName(req, res, guildID, channelID);
+
+    let cached = messageCache.get(messageID);
+    let isOwn = cached ? cached.isOwn : (req.query.isOwn === '1');
+    let rawContent = cached ? cached.rawContent : (req.query.rawContent ?? "");
+
+    if (!isOwn) {
+        throw new Error("Access denied. You can only edit your own messages.");
+    }
+
+    render(res, "edit", {
+        id: channelID,
+        msgid: messageID,
+        gid: guildID,
+        gpath: guildPath,
+        cname: channelName,
+        text: rawContent,
+        token: res.locals.compressedToken,
+        textBoxSize: res.locals.settings.limitTextBoxSize ? 200 : 2000,
+    });
+});
+
+// Edit message POST
+app.post(["/d/:channelid/m/:messageid/edit", "/g/:guildid/c/:channelid/m/:messageid/edit", "/wap/edit"], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.body?.gid ?? req.query?.gid;
+    const channelID = req.params.channelid ?? req.body?.id ?? req.query?.id;
+    const messageID = req.params.messageid ?? req.body?.msgid ?? req.query?.msgid;
+    const guildPath = getGuildPath(guildID);
+
+    const rawChannelId = decompressID(channelID, 'channel');
+    const rawMessageId = decompressID(messageID, 'message');
+
+    await axios.patch(
+        `${DEST_BASE}/channels/${rawChannelId}/messages/${rawMessageId}`,
+        { content: req.body.text },
+        { headers: res.locals.headers }
+    );
+
+    if (messageCache.has(messageID)) {
+        const cached = messageCache.get(messageID);
+        cached.rawContent = req.body.text;
+        cached.content = parseMessageContentText(req.body.text);
+        cached.links = extractLinks(req.body.text);
+        messageCache.set(messageID, cached);
+    }
+
+    res.redirect(`${guildPath}/${channelID}${res.locals.tokenParam}`);
+});
+
+// Delete message
+app.all(["/d/:channelid/m/:messageid/delete", "/g/:guildid/c/:channelid/m/:messageid/delete", "/wap/delete"], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.body?.gid ?? req.query?.gid;
+    const channelID = req.params.channelid ?? req.body?.id ?? req.query?.id;
+    const messageID = req.params.messageid ?? req.body?.msgid ?? req.query?.msgid;
+    const guildPath = getGuildPath(guildID);
+
+    const rawChannelId = decompressID(channelID, 'channel');
+    const rawMessageId = decompressID(messageID, 'message');
+
+    await axios.delete(
+        `${DEST_BASE}/channels/${rawChannelId}/messages/${rawMessageId}`,
+        { headers: res.locals.headers }
+    );
+
+    messageCache.delete(messageID);
+
+    res.redirect(`${guildPath}/${channelID}${res.locals.tokenParam}`);
+});
+
+app.get(["/set", "/wap/set"], getToken, (req, res) => {
+    render(res, "settings", {
+        token: req.query.token,
+        themes,
+        timePreview: getIdTimestamp(res, ((BigInt(Date.now()) - 1420070400000n) << 22n).toString())
+    });
+})
+
+// Error handler
+app.use((err, req, res, next) => {
+    console.log(err);
+    render(res, "error", { error: getError(err) });
 })
 
 app.listen(process.env.PORT, () => {
     console.log(`Server is running on http://localhost:${process.env.PORT}`);
 });
+
+testGateway();

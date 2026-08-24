@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <!DOCTYPE wml PUBLIC "-//WAPFORUM//DTD WML 1.1//EN" "http://www.wapforum.org/DTD/wml_1.1.xml">
 <wml>
-    <card id="edit" title="$(cname)">
+    <card id="edit" title="<%- sanitize(cname) %>">
         <p>
             Edit message:
             <br/>
@@ -10,7 +10,7 @@
 
         <p align="center">
             <anchor>
-                <go method="post" href="/wap/edit">
+                <go method="post" href="<%= gpath %>/<%= id %>/m/<%= msgid %>/edit">
                     <postfield name="token" value="$(token)"/>
                     <postfield name="id" value="<%= id %>"/>
                     <postfield name="msgid" value="<%= msgid %>"/>

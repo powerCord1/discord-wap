@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%- include("include/head.ejs") %>
+    <title><%= cname %></title>
+</head>
+<body>
+    <div class="nav">
+        <a href="<%= gpath %>/<%= id %>/m/<%= msgid %><%= tokenParam %>">&lt; Options</a>
+    </div>
+
+    <div class="sb">Edit Message</div>
+    <form action="<%= gpath %>/<%= id %>/m/<%= msgid %>/edit" method="post">
+        <input type="hidden" name="t" value="<%= compressedToken %>">
+        <% if (locals.gid) { %><input type="hidden" name="gid" value="<%= gid %>"><% } %>
+        <input type="hidden" name="id" value="<%= id %>">
+        <input type="hidden" name="msgid" value="<%= msgid %>">
+        <div><textarea name="text" id="text" rows="5" maxlength="2000"><%= text %></textarea></div>
+        <div><input type="submit" value="Save"></div>
+    </form>
+</body>
+</html>

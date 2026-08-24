@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%- include("include/head.ejs") %>
+    <title><%= cname %></title>
+</head>
+<body>
+    <div class="nav">
+        <a href="<%= gpath %>/<%= id %><%= tokenParam %><%= settings.reverseChat ? '#b' : '' %>">&lt; <%= cname %></a>
+    </div>
+
+    <div class="sb">Message Options</div>
+    <div class="s">
+        <div><b><%- fit(authorName) %>:</b> <%- fit(content) %></div>
+    </div>
+
+    <div class="sb">Actions</div>
+    <div class="s">
+        <div>
+            <a href="<%= gpath %>/<%= id %>/reply/<%= msgid %>?recname=<%= encodeURIComponent(authorName) %><%= tokenParam.replace('?', '&') %>">&gt; Reply to message</a>
+        </div>
+        <% if (isOwn) { %>
+            <div>
+                <a href="<%= gpath %>/<%= id %>/m/<%= msgid %>/edit<%= tokenParam %>">&gt; Edit message</a>
+            </div>
+            <div>
+                <a href="<%= gpath %>/<%= id %>/m/<%= msgid %>/delete<%= tokenParam %>">&gt; Delete message</a>
+            </div>
+        <% } %>
+        <div>
+            <a href="<%= gpath %>/<%= id %>/m/<%= msgid %>/share<%= tokenParam %>">&gt; Share</a>
+        </div>
+        <% if (links && links.length > 0) { %>
+            <% links.forEach(link => { %>
+                <div>
+                    <a href="<%= link %>" target="_blank" rel="noopener noreferrer">&gt; Open link: <%= link %></a>
+                </div>
+            <% }) %>
+        <% } %>
+    </div>
+</body>
+</html>

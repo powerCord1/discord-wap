@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%- include("include/head.ejs") %>
+    <title><%= cname %></title>
+</head>
+<body>
+    <table class="nav" id="t">
+        <tr>
+            <td><a href="<%= gpath %>/<%= id %><%= tokenParam %><%= settings.reverseChat ? '#b' : '' %>"><img src="/back.png" alt="Back"></a></td>
+            <td class="title"><%- fit(cname) %></td>
+            <td><a href="#b"><img src="/btm.png" alt="Bottom"></a></td>
+        </tr>
+    </table>
+
+    <div class="section">
+        <h3>Message Options</h3>
+        <p><b><%- fit(authorName) %>:</b> <%- fit(content) %></p>
+        <hr>
+        <ul style="list-style-type: none; padding-left: 0;">
+            <li style="margin-bottom: 0.5em;">
+                <a href="<%= gpath %>/<%= id %>/reply/<%= msgid %>?recname=<%= encodeURIComponent(authorName) %><%= tokenParam.replace('?', '&') %>">Reply to message</a>
+            </li>
+            <% if (isOwn) { %>
+                <li style="margin-bottom: 0.5em;">
+                    <a href="<%= gpath %>/<%= id %>/m/<%= msgid %>/edit<%= tokenParam %>">Edit message</a>
+                </li>
+                <li style="margin-bottom: 0.5em;">
+                    <a href="<%= gpath %>/<%= id %>/m/<%= msgid %>/delete<%= tokenParam %>">Delete message</a>
+                </li>
+            <% } %>
+            <li style="margin-bottom: 0.5em;">
+                <a href="<%= gpath %>/<%= id %>/m/<%= msgid %>/share<%= tokenParam %>">Share</a>
+            </li>
+            <% if (links && links.length > 0) { %>
+                <% links.forEach(link => { %>
+                    <li style="margin-bottom: 0.5em;">
+                        <a href="<%= link %>" target="_blank" rel="noopener noreferrer">Open link: <%= link %></a>
+                    </li>
+                <% }) %>
+            <% } %>
+        </ul>
+    </div>
+</body>
+</html>

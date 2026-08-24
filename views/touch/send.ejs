@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%- include("include/head.ejs") %>
+    <title><%= cname %></title>
+</head>
+<body>
+    <table class="nav" id="t">
+        <tr>
+            <td><a href="<%= gpath %>/<%= id %><%= tokenParam %><%= settings.reverseChat ? '#b' : '' %>"><img src="/back.png" alt="Back"></a></td>
+            <td class="title"><%- fit(cname) %></td>
+            <td><a href="#b"><img src="/btm.png" alt="Bottom"></a></td>
+        </tr>
+    </table>
+
+    <div class="section">
+        <form action="<%= gpath %>/<%= id %>/send" method="post" enctype="multipart/form-data">
+            <input type="hidden" name="t" value="<%= compressedToken %>">
+            <% if (locals.gid) { %><input type="hidden" name="gid" value="<%= gid %>"><% } %>
+            <input type="hidden" name="id" value="<%= id %>">
+            <label for="text">Your message:</label>
+            <div><textarea name="text" id="text" rows="5" maxlength="2000"></textarea></div>
+            <label for="file">Attach file (max 20MB):</label>
+            <div><input type="file" name="file" id="file"></div>
+            <div><input type="submit" value="Send"></div>
+        </form>
+    </div>
+</body>
+</html>
