@@ -1006,9 +1006,14 @@ app.all(["/d/:channelid/m/:messageid/share", "/g/:guildid/c/:channelid/m/:messag
         rawServerId = channelGuildCache.get(rawChannelId);
     }
 
+    let timeStr = getIdTimestamp(res, rawMessageId);
+    if (timeStr.endsWith('A')) timeStr = timeStr.slice(0, -1) + 'am';
+    else if (timeStr.endsWith('P')) timeStr = timeStr.slice(0, -1) + 'pm';
+
+    const shareBodyText = `${authorName} @ ${timeStr}:\n${rawContent}`;
     const messageLink = `https://discord.com/channels/${rawServerId}/${rawChannelId}/${rawMessageId}`;
     const shareLinkUrl = `sms:?body=${encodeURIComponent(messageLink)}`;
-    const shareTextUrl = `sms:?body=${encodeURIComponent(rawContent)}`;
+    const shareTextUrl = `sms:?body=${encodeURIComponent(shareBodyText)}`;
 
     render(res, "share", {
         id: channelID,
@@ -1017,7 +1022,9 @@ app.all(["/d/:channelid/m/:messageid/share", "/g/:guildid/c/:channelid/m/:messag
         gpath: guildPath,
         cname: channelName,
         authorName,
+        timeStr,
         rawContent,
+        shareBodyText,
         messageLink,
         shareLinkUrl,
         shareTextUrl,

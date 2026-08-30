@@ -10,7 +10,9 @@
         </p>
 
         <p>
-            <b>Share:</b>
+            <b><%- sanitize(authorName) %> @ <%= timeStr %>:</b>
+            <br/>
+            <%- fit(rawContent) %>
         </p>
 
         <p>
