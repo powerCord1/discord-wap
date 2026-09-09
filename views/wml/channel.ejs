@@ -44,7 +44,25 @@
             </p>
             <p>
                 <%- m.referenced_message ? (`to ${oneLine(m.referenced_message.author.name, 4)}:<br/>`) : '' %>
-                <%- sanitize(m.content) %>
+                <% if (m.content) { %>
+                    <%- sanitize(m.content) %>
+                <% } %>
+                <% if (m.embeds) { %>
+                    <% m.embeds.forEach(emb => { %>
+                        <% if (m.content) { %><br/><% } %>
+                        <% if (emb.title) { %>
+                            <b><%- sanitize(emb.title) %></b><br/>
+                        <% } %>
+                        <% if (emb.description) { %>
+                            <%- sanitize(emb.description) %><br/>
+                        <% } %>
+                        <% if (emb.fields && emb.fields.length) { %>
+                            <% emb.fields.forEach(f => { %>
+                                <b><%- sanitize(f.name) %>:</b> <%- sanitize(f.value) %><br/>
+                            <% }) %>
+                        <% } %>
+                    <% }) %>
+                <% } %>
             </p>
         <% }) %>
 

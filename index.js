@@ -211,6 +211,36 @@ function parseMessageObject(req, res, msg) {
         })
     }
 
+    if (msg.embeds) {
+        result.embeds = msg.embeds
+            .filter(emb => emb.type === 'rich')
+            .map(emb => {
+                let colorHex = (emb.color !== undefined && emb.color !== null)
+                    ? '#' + emb.color.toString(16).padStart(6, '0')
+                    : '#4f545c';
+                let title = emb.title ? parseMessageContentText(emb.title) : null;
+                let description = emb.description ? parseMessageContentText(emb.description) : null;
+                let authorName = emb.author?.name ? parseMessageContentText(emb.author.name) : null;
+                let footerText = emb.footer?.text ? parseMessageContentText(emb.footer.text) : null;
+                let fields = emb.fields?.map(f => ({
+                    name: parseMessageContentText(f.name),
+                    value: parseMessageContentText(f.value)
+                })) || [];
+
+                return {
+                    title,
+                    description,
+                    authorName,
+                    footerText,
+                    fields,
+                    color: colorHex
+                };
+            });
+        if (!result.embeds.length) {
+            delete result.embeds;
+        }
+    }
+
     return result;
 }
 
@@ -256,12 +286,13 @@ function parseMessageContentNonStatus(res, msg, singleLine) {
     }
     if (msg.embeds?.length) {
         msg.embeds.forEach(emb => {
+            if (emb.type === 'rich') return;
             if (!emb.title) return;
             if (result.length) result += "\n";
             result += `(embed: ${parseMessageContentText(emb.title)})`;
         })
     }
-    if (result == '' && !msg.attachments) return "(unsupported message)";
+    if (result == '' && !msg.attachments && !msg.embeds?.some(e => e.type === 'rich')) return "(unsupported message)";
 
     // iOS keyboard replaces apostrophes with a unicode character that shows up as missing character on old phones
     result = result.replace(/’/g, "'");
@@ -769,15 +800,29 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
         userCache.set(msg.author.id, msg.author.username);
         const compressedId = compressID(msg.id);
         const isOwn = Boolean(msg.author && (msg.author.id === rawUserId || compressID(msg.author.id) === res.locals.userID));
+        let rawContent = msg.content || "";
+        if (!rawContent && msg.embeds?.length) {
+            const rich = msg.embeds.find(e => e.type === 'rich');
+            if (rich) {
+                rawContent = [rich.title, rich.description].filter(Boolean).join("\n");
+            }
+        }
+        let parsedContent = parseMessageContent(res, msg);
+        if ((!parsedContent || parsedContent === "(unsupported message)") && msg.embeds?.length) {
+            const rich = msg.embeds.find(e => e.type === 'rich');
+            if (rich) {
+                parsedContent = [rich.title, rich.description].filter(Boolean).map(t => parseMessageContentText(t)).join("\n");
+            }
+        }
         messageCache.set(compressedId, {
             id: compressedId,
             rawId: msg.id,
             authorName: msg.author?.global_name ?? msg.author?.username ?? "Unknown",
             authorId: msg.author?.id,
             isOwn,
-            content: parseMessageContent(res, msg),
-            rawContent: msg.content || "",
-            links: extractLinks(msg.content)
+            content: parsedContent,
+            rawContent: rawContent,
+            links: extractLinks(rawContent)
         });
     });
 

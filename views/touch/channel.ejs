@@ -68,6 +68,29 @@
                             <% } %>
                         </div>
                     <% } %>
+                    <% if (m.embeds) { %>
+                        <% m.embeds.forEach(emb => { %>
+                            <div class="embed" style="border-left-color: <%= emb.color %>;">
+                                <% if (emb.authorName) { %>
+                                    <div class="embedauthor"><%- fit(emb.authorName) %></div>
+                                <% } %>
+                                <% if (emb.title) { %>
+                                    <div class="embedtitle"><%- fit(emb.title) %></div>
+                                <% } %>
+                                <% if (emb.description) { %>
+                                    <div><%- fit(emb.description) %></div>
+                                <% } %>
+                                <% if (emb.fields && emb.fields.length) { %>
+                                    <% emb.fields.forEach(f => { %>
+                                        <div><strong><%- fit(f.name) %>:</strong> <%- fit(f.value) %></div>
+                                    <% }) %>
+                                <% } %>
+                                <% if (emb.footerText) { %>
+                                    <div class="embedfooter"><%- fit(emb.footerText) %></div>
+                                <% } %>
+                            </div>
+                        <% }) %>
+                    <% } %>
                     <% if (m.attachments) { %>
                         <% m.attachments.forEach(att => { %>
                             <div><a href="<%= att.url %>"><%- fit(att.filename) %></a></div>
