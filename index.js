@@ -797,7 +797,7 @@ function shouldShowAuthor(msg, above, clusterStart) {
 // Get channel messages
 app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, async (req, res) => {
     const guildID = req.params.guildid ?? (req.query.gid && req.query.gid !== '@me' ? req.query.gid : undefined);
-    const channelID = req.params.channelid ?? req.query.id ?? req.body.id;
+    const channelID = req.params.channelid ?? req.query?.id ?? req.body?.id;
     const guildName = await getGuildName(req, res, guildID);
     const guildPath = getGuildPath(guildID);
     const channelName = await getChannelName(req, res, guildID, channelID);
@@ -1048,17 +1048,17 @@ app.post(["/d/:channelid/send", "/g/:guildid/c/:channelid/send", "/wap/send"], u
 
 // Message options
 app.all(["/d/:channelid/m/:messageid", "/g/:guildid/c/:channelid/m/:messageid", "/wap/msg"], getToken, async (req, res) => {
-    const guildID = req.params.guildid ?? req.query.gid ?? req.body.gid;
-    const channelID = req.params.channelid ?? req.query.id ?? req.body.id;
-    const messageID = req.params.messageid ?? req.query.msgid ?? req.body.msgid;
+    const guildID = req.params.guildid ?? req.query?.gid ?? req.body?.gid;
+    const channelID = req.params.channelid ?? req.query?.id ?? req.body?.id;
+    const messageID = req.params.messageid ?? req.query?.msgid ?? req.body?.msgid;
     const guildPath = getGuildPath(guildID);
     const channelName = await getChannelName(req, res, guildID, channelID);
 
     let cached = messageCache.get(messageID);
-    let authorName = cached?.authorName ?? req.query.recname ?? req.body.recname ?? "Unknown";
-    let isOwn = cached?.isOwn ?? (req.query.isOwn === '1');
-    let content = cached?.content ?? (req.query.content ?? "");
-    let rawContent = cached?.rawContent ?? req.query.rawContent ?? "";
+    let authorName = cached?.authorName ?? req.query?.recname ?? req.body?.recname ?? "Unknown";
+    let isOwn = cached?.isOwn ?? (req.query?.isOwn === '1' || req.body?.isOwn === '1');
+    let content = cached?.content ?? (req.query?.content ?? req.body?.content ?? "");
+    let rawContent = cached?.rawContent ?? (req.query?.rawContent ?? req.body?.rawContent ?? "");
     let links = cached?.links ?? extractLinks(rawContent);
 
     const rawChannelId = decompressID(channelID, 'channel');
@@ -1094,15 +1094,15 @@ app.all(["/d/:channelid/m/:messageid", "/g/:guildid/c/:channelid/m/:messageid", 
 
 // Share message
 app.all(["/d/:channelid/m/:messageid/share", "/g/:guildid/c/:channelid/m/:messageid/share", "/wap/share"], getToken, async (req, res) => {
-    const guildID = req.params.guildid ?? req.query.gid ?? req.body.gid;
-    const channelID = req.params.channelid ?? req.query.id ?? req.body.id;
-    const messageID = req.params.messageid ?? req.query.msgid ?? req.body.msgid;
+    const guildID = req.params.guildid ?? req.query?.gid ?? req.body?.gid;
+    const channelID = req.params.channelid ?? req.query?.id ?? req.body?.id;
+    const messageID = req.params.messageid ?? req.query?.msgid ?? req.body?.msgid;
     const guildPath = getGuildPath(guildID);
     const channelName = await getChannelName(req, res, guildID, channelID);
 
     let cached = messageCache.get(messageID);
-    let authorName = cached?.authorName ?? req.query.recname ?? req.body.recname ?? "Unknown";
-    let rawContent = cached?.rawContent ?? req.query.rawContent ?? "";
+    let authorName = cached?.authorName ?? req.query?.recname ?? req.body?.recname ?? "Unknown";
+    let rawContent = cached?.rawContent ?? (req.query?.rawContent ?? req.body?.rawContent ?? "");
 
     const rawChannelId = decompressID(channelID, 'channel');
     const rawMessageId = decompressID(messageID, 'message');
@@ -1146,15 +1146,15 @@ app.all(["/d/:channelid/m/:messageid/share", "/g/:guildid/c/:channelid/m/:messag
 
 // Edit message page
 app.get(["/d/:channelid/m/:messageid/edit", "/g/:guildid/c/:channelid/m/:messageid/edit", "/wap/edit"], getToken, async (req, res) => {
-    const guildID = req.params.guildid ?? req.query.gid;
-    const channelID = req.params.channelid ?? req.query.id;
-    const messageID = req.params.messageid ?? req.query.msgid;
+    const guildID = req.params.guildid ?? req.query?.gid ?? req.body?.gid;
+    const channelID = req.params.channelid ?? req.query?.id ?? req.body?.id;
+    const messageID = req.params.messageid ?? req.query?.msgid ?? req.body?.msgid;
     const guildPath = getGuildPath(guildID);
     const channelName = await getChannelName(req, res, guildID, channelID);
 
     let cached = messageCache.get(messageID);
-    let isOwn = cached ? cached.isOwn : (req.query.isOwn === '1');
-    let rawContent = cached ? cached.rawContent : (req.query.rawContent ?? "");
+    let isOwn = cached ? cached.isOwn : (req.query?.isOwn === '1' || req.body?.isOwn === '1');
+    let rawContent = cached ? cached.rawContent : (req.query?.rawContent ?? req.body?.rawContent ?? "");
 
     if (!isOwn) {
         throw new Error("Access denied. You can only edit your own messages.");
