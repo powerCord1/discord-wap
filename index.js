@@ -38,6 +38,27 @@ const userCache = new LRUCache({ max: 10000 });
 const channelNameCache = new LRUCache({ max: 10000 });
 const channelGuildCache = new LRUCache({ max: 10000 });
 const messageCache = new LRUCache({ max: 10000, ttl: 30 * 60 * 1000 });
+const memberNickCache = new LRUCache({ max: 10000, ttl: 60 * 60 * 1000 });
+
+async function getGuildMemberNick(rawGuildId, rawUserId, headers) {
+    if (!rawGuildId || !rawUserId) return null;
+    const cacheKey = `${rawGuildId}:${rawUserId}`;
+    if (memberNickCache.has(cacheKey)) {
+        return memberNickCache.get(cacheKey);
+    }
+    try {
+        const res = await axios.get(
+            `${DEST_BASE}/guilds/${rawGuildId}/members/${rawUserId}`,
+            { headers }
+        );
+        const nick = res.data?.nick || null;
+        memberNickCache.set(cacheKey, nick);
+        return nick;
+    } catch (e) {
+        memberNickCache.set(cacheKey, null);
+        return null;
+    }
+}
 
 function getRawUserIdFromToken(token) {
     if (!token || !token.trim().length) return null;
@@ -147,7 +168,7 @@ function parseMessageObject(req, res, msg) {
         edited: msg.edited_timestamp
     }
     if (msg.author) {
-        const author = msg.author.global_name ?? msg.author.username;
+        const author = msg.member?.nick ?? msg.author.global_name ?? msg.author.username;
         result.author = {
             id: compressID(msg.author.id),
             name: normalizeStripEmoji(req, author),
@@ -176,7 +197,7 @@ function parseMessageObject(req, res, msg) {
         }
         result.referenced_message = {
             author: {
-                name: normalizeStripEmoji(req, msg.referenced_message.author.global_name ?? msg.referenced_message.author.username),
+                name: normalizeStripEmoji(req, msg.referenced_message.member?.nick ?? msg.referenced_message.author.global_name ?? msg.referenced_message.author.username),
                 id: compressID(msg.referenced_message.author.id),
             },
             content
@@ -245,7 +266,7 @@ function parseMessageObject(req, res, msg) {
 }
 
 function parseMessageContent(res, msg, singleLine = false) {
-    const target = msg.mentions?.[0]?.global_name ?? msg.mentions?.[0]?.username;
+    const target = msg.mentions?.[0]?.member?.nick ?? msg.mentions?.[0]?.global_name ?? msg.mentions?.[0]?.username;
     switch (msg.type) {
         case 1: return `added ${target} to the group`;
         case 2: return `removed ${target} from the group`;
@@ -794,10 +815,56 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
 
     const messagesGet = (await axios.get(proxyUrl, { headers: res.locals.headers })).data;
 
+    // Fetch server-specific nicknames if in a guild
+    const rawGuildId = (guildID && guildID !== '@me') ? decompressID(guildID, 'server') : null;
+    if (rawGuildId) {
+        const userIds = new Set();
+        messagesGet.forEach(msg => {
+            if (msg.author?.id) userIds.add(msg.author.id);
+            if (msg.referenced_message?.author?.id) userIds.add(msg.referenced_message.author.id);
+            if (msg.mentions) msg.mentions.forEach(m => userIds.add(m.id));
+        });
+
+        const uncachedIds = [...userIds].filter(id => !memberNickCache.has(`${rawGuildId}:${id}`));
+        if (uncachedIds.length > 0) {
+            await Promise.all(uncachedIds.map(id => getGuildMemberNick(rawGuildId, id, res.locals.headers)));
+        }
+
+        messagesGet.forEach(msg => {
+            if (msg.author?.id) {
+                const nick = memberNickCache.get(`${rawGuildId}:${msg.author.id}`);
+                if (nick) {
+                    msg.member = { ...msg.member, nick };
+                }
+            }
+            if (msg.referenced_message?.author?.id) {
+                const refNick = memberNickCache.get(`${rawGuildId}:${msg.referenced_message.author.id}`);
+                if (refNick) {
+                    msg.referenced_message.member = { ...msg.referenced_message.member, nick: refNick };
+                }
+            }
+            if (msg.mentions) {
+                msg.mentions.forEach(m => {
+                    const mNick = memberNickCache.get(`${rawGuildId}:${m.id}`);
+                    if (mNick) {
+                        m.member = { ...m.member, nick: mNick };
+                    }
+                });
+            }
+        });
+    }
+
     // Populate username and message cache
     const rawUserId = getRawUserIdFromToken(res.locals.token);
     messagesGet.forEach(msg => {
-        userCache.set(msg.author.id, msg.author.username);
+        const authorDisplayName = msg.member?.nick ?? msg.author.global_name ?? msg.author.username;
+        userCache.set(msg.author.id, authorDisplayName);
+        if (msg.mentions) {
+            msg.mentions.forEach(m => {
+                const mentionName = m.member?.nick ?? m.global_name ?? m.username;
+                userCache.set(m.id, mentionName);
+            });
+        }
         const compressedId = compressID(msg.id);
         const isOwn = Boolean(msg.author && (msg.author.id === rawUserId || compressID(msg.author.id) === res.locals.userID));
         let rawContent = msg.content || "";
@@ -817,7 +884,7 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
         messageCache.set(compressedId, {
             id: compressedId,
             rawId: msg.id,
-            authorName: msg.author?.global_name ?? msg.author?.username ?? "Unknown",
+            authorName: authorDisplayName,
             authorId: msg.author?.id,
             isOwn,
             content: parsedContent,
