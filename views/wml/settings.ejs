@@ -49,6 +49,14 @@
                 <option value="1">Reduced</option>
             </select>
         </p>
+        <p>
+            Convert emojis to images:
+            <br/>
+            <select name="emj" value="<%= settings.convertEmojisToImages ? 1 : 0 %>">
+                <option value="0">Disabled</option>
+                <option value="1">Enabled</option>
+            </select>
+        </p>
         <p align="center">
             <a href="#time">Time format</a>
             <br/>
@@ -105,6 +113,7 @@
                    <postfield name="s6" value="0"/>
                    <postfield name="s7" value="$(lay)"/>
                    <postfield name="s8" value="$(asc)"/>
+                   <postfield name="s9" value="$(emj)"/>
                </go>
                &gt; Save
             </anchor>

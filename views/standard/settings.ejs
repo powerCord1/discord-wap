@@ -43,6 +43,12 @@
             <option value="1" <%= settings.useAnyAscii ? 'selected' : '' %>>Reduced</option>
         </select> <br/>
 
+        <label for="s9">Convert emojis to images:</label> <br/>
+        <select name="s9" id="s9">
+            <option value="0" <%= settings.convertEmojisToImages ? '' : 'selected' %>>Disabled</option>
+            <option value="1" <%= settings.convertEmojisToImages ? 'selected' : '' %>>Enabled</option>
+        </select> <br/>
+
         <div class="sb">Time format</div>
         <div class="s">
             Current time: <strong><%= timePreview %></strong>

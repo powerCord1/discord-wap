@@ -9,7 +9,14 @@ function sanitize(res, str) {
     if (res.locals.settings?.useAnyAscii ?? res.locals.format == "wml") {
         str = anyAscii(str);
     }
-    str = sanitizeHtml(str, {allowedTags: [], disallowedTagsMode: 'recursiveEscape'});
+    const allowedTags = res.locals.settings?.convertEmojisToImages ? ['img'] : [];
+    str = sanitizeHtml(str, {
+        allowedTags,
+        allowedAttributes: {
+            'img': ['src', 'class', 'alt', 'width', 'height', 'style', 'data-codepoints']
+        },
+        disallowedTagsMode: 'recursiveEscape'
+    });
 
     if (res.locals.format == "wml") {
         // WML variables
@@ -67,23 +74,28 @@ function getWordBreakMethod(req) {
 }
 
 function placeWordBreaks(str) {
-    // match long words, at least 16 consecutive letters
-    return str.replace(/([^\s]{16,})/g, (match) => {
-        let result = '';
-        let canPlace = true;
-        
-        match.split('').forEach((chr, i) => {
-            result += chr;
+    // Split by HTML tags to only place word breaks in text nodes
+    return str.split(/(<[^>]+>)/g).map(part => {
+        if (part.startsWith('<') && part.endsWith('>')) {
+            return part;
+        }
+        return part.replace(/([^\s]{16,})/g, (match) => {
+            let result = '';
+            let canPlace = true;
+            
+            match.split('').forEach((chr, i) => {
+                result += chr;
 
-            // don't break apart other html entities
-            if (chr == '&') canPlace = false;
-            else if (chr == ';') canPlace = true;
+                // don't break apart other html entities
+                if (chr == '&') canPlace = false;
+                else if (chr == ';') canPlace = true;
 
-            // place word break opportunities every 4 characters starting from char position 12 if there are at least 2 more chars left to go
-            if (canPlace && (i + 1) % 4 == 0 && i >= 11 && str.length > (i + 2)) result += "&shy;";
-        })
-        return result;
-    })
+                // place word break opportunities every 4 characters starting from char position 12 if there are at least 2 more chars left to go
+                if (canPlace && (i + 1) % 4 == 0 && i >= 11 && part.length > (i + 2)) result += "&shy;";
+            });
+            return result;
+        });
+    }).join('');
 }
 
 // In views, strings must be formatted in any of the following ways:

@@ -22,6 +22,15 @@ const upload = multer({
 const emoji = new EmojiConvertor();
 emoji.replace_mode = 'unified';
 
+const emojiImg = new EmojiConvertor();
+emojiImg.replace_mode = 'img';
+emojiImg.img_sets.joypixels = {
+    path: 'https://cdn.jsdelivr.net/joypixels/assets/6.6/png/unicode/64/',
+    sheet: '',
+    mask: 1
+};
+emojiImg.img_set = 'joypixels';
+
 const app = express();
 const DEST_BASE = "https://discord.com/api/v9";
 
@@ -122,19 +131,19 @@ function getIdTimestamp(res, id) {
     }
 }
 
-function normalizeStr(str, convertEmoji = false) {
+function normalizeStr(str, convertEmoji = false, res = null) {
     if (str === null || str === undefined) return "(err)";
     str = String(str);
-    if (convertEmoji) str = parseMessageContentText(str);
+    if (convertEmoji) str = parseMessageContentText(str, res);
     return str;
 }
 
 function normalizeStripEmoji(req, str) {
-    str = normalizeStr(str);
+    str = normalizeStr(str, false, req?.res);
 
-    if (!req.res.locals.theme.stripEmoji) return str;
+    if (!req?.res?.locals?.theme?.stripEmoji) return str;
 
-    const strConvEmoji = normalizeStr(str, true);
+    const strConvEmoji = normalizeStr(str, true, req?.res);
     if (str == strConvEmoji) return str;
 
     const strNoEmoji = strConvEmoji.replace(/:\w+:/g, '');
@@ -239,13 +248,13 @@ function parseMessageObject(req, res, msg) {
                 let colorHex = (emb.color !== undefined && emb.color !== null)
                     ? '#' + emb.color.toString(16).padStart(6, '0')
                     : '#4f545c';
-                let title = emb.title ? parseMessageContentText(emb.title) : null;
-                let description = emb.description ? parseMessageContentText(emb.description) : null;
-                let authorName = emb.author?.name ? parseMessageContentText(emb.author.name) : null;
-                let footerText = emb.footer?.text ? parseMessageContentText(emb.footer.text) : null;
+                let title = emb.title ? parseMessageContentText(emb.title, res) : null;
+                let description = emb.description ? parseMessageContentText(emb.description, res) : null;
+                let authorName = emb.author?.name ? parseMessageContentText(emb.author.name, res) : null;
+                let footerText = emb.footer?.text ? parseMessageContentText(emb.footer.text, res) : null;
                 let fields = emb.fields?.map(f => ({
-                    name: parseMessageContentText(f.name),
-                    value: parseMessageContentText(f.value)
+                    name: parseMessageContentText(f.name, res),
+                    value: parseMessageContentText(f.value, res)
                 })) || [];
 
                 return {
@@ -292,25 +301,25 @@ function parseMessageContentNonStatus(res, msg, singleLine) {
     }
     // Normal message content
     else if (msg.content) {
-        result = parseMessageContentText(msg.content);
+        result = parseMessageContentText(msg.content, res);
     }
 
     if (msg.attachments?.length && !res.locals.theme.showAttachments) {
         msg.attachments.forEach(att => {
             if (result.length) result += "\n";
-            result += `(file: ${parseMessageContentText(att.filename)})`;
+            result += `(file: ${parseMessageContentText(att.filename, res)})`;
         })
     }
     if (msg.sticker_items?.length) {
         if (result.length) result += "\n";
-        result += `(sticker: ${parseMessageContentText(msg.sticker_items[0].name)})`;
+        result += `(sticker: ${parseMessageContentText(msg.sticker_items[0].name, res)})`;
     }
     if (msg.embeds?.length) {
         msg.embeds.forEach(emb => {
             if (emb.type === 'rich') return;
             if (!emb.title) return;
             if (result.length) result += "\n";
-            result += `(embed: ${parseMessageContentText(emb.title)})`;
+            result += `(embed: ${parseMessageContentText(emb.title, res)})`;
         })
     }
     if (result == '' && !msg.attachments && !msg.embeds?.some(e => e.type === 'rich')) return "(unsupported message)";
@@ -322,7 +331,7 @@ function parseMessageContentNonStatus(res, msg, singleLine) {
     return result;
 }
 
-function parseMessageContentText(content) {
+function parseMessageContentText(content, res = null) {
     if (!content) return content;
     let result = content
         // try to convert <@12345...> format into @username
@@ -358,7 +367,11 @@ function parseMessageContentText(content) {
         .replace(/;p/g, ":stuck_out_tongue_winking_eye:")
         .replace(/<3/g, ":heart:");
 
-    result = emoji.replace_unified(result);
+    if (res?.locals?.settings?.convertEmojisToImages) {
+        result = emojiImg.replace_unified(emojiImg.replace_colons(result));
+    } else {
+        result = emoji.replace_unified(result);
+    }
     return result;
 }
 
@@ -384,6 +397,9 @@ function makeGetTokenMiddleware(isOptional) {
 
         res.locals.userID = res.locals.token.split('.')[0];
 
+        const ua = (req.headers['user-agent'] ?? '').toLowerCase();
+        const isOperaMini = ua.includes('opera mini') || ua.includes('operamini');
+
         if (req.query.s0) {
             res.locals.token = res.locals.token.split('.').slice(0, 3).join('.')
                 + '.' + req.query.s0
@@ -394,7 +410,8 @@ function makeGetTokenMiddleware(isOptional) {
                 + '.' + req.query.s5
                 + '.' + req.query.s6
                 + '.' + req.query.s7
-                + '.' + req.query.s8;
+                + '.' + req.query.s8
+                + '.' + (req.query.s9 ?? (isOperaMini ? '1' : '0'));
         }
         const settingsArr = res.locals.token.split('.').slice(3);
 
@@ -425,6 +442,7 @@ function makeGetTokenMiddleware(isOptional) {
             limitTextBoxSize: (Number(settingsArr[5]) || 0) != 0,
             reverseChat: (Number(settingsArr[6] ?? res.locals.theme.messagesOnBottomDefault)) != 0,
             useAnyAscii: (Number(settingsArr[8] ?? (res.locals.format == 'wml'))) != 0,
+            convertEmojisToImages: (Number(settingsArr[9] ?? (isOperaMini ? 1 : 0))) != 0,
         }
 
         res.locals.authToken = decompressToken(res.locals.token).split('.').slice(0, 3).join('.');
@@ -878,7 +896,7 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
         if ((!parsedContent || parsedContent === "(unsupported message)") && msg.embeds?.length) {
             const rich = msg.embeds.find(e => e.type === 'rich');
             if (rich) {
-                parsedContent = [rich.title, rich.description].filter(Boolean).map(t => parseMessageContentText(t)).join("\n");
+                parsedContent = [rich.title, rich.description].filter(Boolean).map(t => parseMessageContentText(t, res)).join("\n");
             }
         }
         messageCache.set(compressedId, {
@@ -1191,7 +1209,7 @@ app.post(["/d/:channelid/m/:messageid/edit", "/g/:guildid/c/:channelid/m/:messag
     if (messageCache.has(messageID)) {
         const cached = messageCache.get(messageID);
         cached.rawContent = req.body.text;
-        cached.content = parseMessageContentText(req.body.text);
+        cached.content = parseMessageContentText(req.body.text, res);
         cached.links = extractLinks(req.body.text);
         messageCache.set(messageID, cached);
     }
