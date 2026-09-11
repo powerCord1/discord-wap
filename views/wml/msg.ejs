@@ -24,6 +24,13 @@
                 </go>
                 Reply to message
             </anchor>
+            <br/>
+            <anchor>
+                <go href="#react">
+                    <setvar name="emoji" value=""/>
+                </go>
+                React to message
+            </anchor>
             <% if (isOwn) { %>
                 <br/>
                 <anchor>
@@ -53,6 +60,33 @@
                     <a href="<%= link %>">Open link: <%= link %></a>
                 <% }) %>
             <% } %>
+        </p>
+    </card>
+
+    <card id="react" title="<%- sanitize(cname) %>">
+        <onevent type="onenterbackward">
+            <prev/>
+        </onevent>
+
+        <p>
+            React to message:
+            <br/>
+            <input name="emoji" size="20"/>
+        </p>
+
+        <p align="center">
+            <anchor>
+                <go method="post" href="<%= gpath %>/<%= id %>/m/<%= msgid %>/react">
+                    <postfield name="token" value="$(token)"/>
+                    <postfield name="emoji" value="$(emoji)"/>
+                </go>
+                React
+            </anchor>
+            <br/>
+            <anchor>
+                <prev/>
+                Back
+            </anchor>
         </p>
     </card>
 

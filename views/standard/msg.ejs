@@ -19,6 +19,9 @@
         <div>
             <a href="<%= gpath %>/<%= id %>/reply/<%= msgid %>?recname=<%= encodeURIComponent(authorName) %><%= tokenParam.replace('?', '&') %>">&gt; Reply to message</a>
         </div>
+        <div>
+            <a href="<%= gpath %>/<%= id %>/m/<%= msgid %>/react<%= tokenParam %>">&gt; React to message</a>
+        </div>
         <% if (isOwn) { %>
             <div>
                 <a href="<%= gpath %>/<%= id %>/m/<%= msgid %>/edit<%= tokenParam %>">&gt; Edit message</a>

@@ -96,6 +96,15 @@
                             <div><a href="<%= att.url %>"><%- fit(att.filename) %></a></div>
                         <% }) %>
                     <% } %>
+                    <% if (m.reactions && m.reactions.length) { %>
+                        <div class="reactions">
+                            <% m.reactions.forEach(r => { %>
+                                <a href="<%= gpath %>/<%= id %>/m/<%= m.id %>/react/<%= r.apiStr %>?action=<%= r.me ? 'remove' : 'add' %><%= tokenParam.replace('?', '&') %>" class="reaction <%= r.me ? 'reaction-me' : '' %>">
+                                    <%- r.display %><span class="<%= r.me ? 'reaction-count-me' : 'reaction-count' %>"><%= r.count %></span>
+                                </a>
+                            <% }) %>
+                        </div>
+                    <% } %>
                 </td>
             </tr>
         <% }) %>

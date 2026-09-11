@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<!DOCTYPE wml PUBLIC "-//WAPFORUM//DTD WML 1.1//EN" "http://www.wapforum.org/DTD/wml_1.1.xml">
+<wml>
+    <card id="react" title="<%- sanitize(cname) %>">
+        <p align="center">
+            <anchor>
+                <prev/>
+                Back
+            </anchor>
+        </p>
+
+        <p>
+            <b><%- sanitize(authorName) %>:</b> <%- fit(content) %>
+        </p>
+
+        <% if (reactions && reactions.length) { %>
+            <p>
+                <% reactions.forEach(r => { %>
+                    <anchor>
+                        <go method="get" href="<%= gpath %>/<%= id %>/m/<%= msgid %>/react/<%= r.apiStr %>?action=<%= r.me ? 'remove' : 'add' %>">
+                            <postfield name="token" value="$(token)"/>
+                            <postfield name="action" value="<%= r.me ? 'remove' : 'add' %>"/>
+                        </go>
+                        [<%- sanitize(r.display) %> <%= r.count %>]
+                    </anchor>
+                <% }) %>
+            </p>
+        <% } %>
+
+        <p>
+            Emoji or code:
+            <br/>
+            <input name="emoji" size="20"/>
+        </p>
+
+        <p align="center">
+            <anchor>
+                <go method="post" href="<%= gpath %>/<%= id %>/m/<%= msgid %>/react">
+                    <postfield name="token" value="$(token)"/>
+                    <postfield name="emoji" value="$(emoji)"/>
+                </go>
+                React
+            </anchor>
+        </p>
+    </card>
+</wml>

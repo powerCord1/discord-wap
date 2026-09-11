@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%- include("include/head.ejs") %>
+    <title><%= cname %></title>
+</head>
+<body>
+    <div class="nav">
+        <a href="<%= gpath %>/<%= id %>/m/<%= msgid %><%= tokenParam %>">&lt; Options</a>
+    </div>
+
+    <div class="sb">React</div>
+    <div class="s">
+        <div><b><%- fit(authorName) %>:</b> <%- fit(content) %></div>
+        <% if (reactions && reactions.length) { %>
+            <div class="reactions" style="margin-top: 6px;">
+                <% reactions.forEach(r => { %>
+                    <a href="<%= gpath %>/<%= id %>/m/<%= msgid %>/react/<%= r.apiStr %>?action=<%= r.me ? 'remove' : 'add' %><%= tokenParam.replace('?', '&') %>" class="reaction <%= r.me ? 'reaction-me' : '' %>">
+                        <%- r.display %><span class="<%= r.me ? 'reaction-count-me' : 'reaction-count' %>"><%= r.count %></span>
+                    </a>
+                <% }) %>
+            </div>
+        <% } %>
+    </div>
+
+    <div class="sb">Add Reaction</div>
+    <div class="s">
+        <form action="<%= gpath %>/<%= id %>/m/<%= msgid %>/react" method="post">
+            <input type="hidden" name="t" value="<%= token %>">
+            <input type="hidden" name="gid" value="<%= gid %>">
+            <input type="hidden" name="id" value="<%= id %>">
+            <input type="hidden" name="msgid" value="<%= msgid %>">
+
+            <label for="emoji">Emoji or shortcode (e.g. :heart:, :fire:, ❤️):</label><br/>
+            <input type="text" name="emoji" id="emoji" autofocus required><br/>
+            <input type="submit" value="Add Reaction">
+        </form>
+    </div>
+</body>
+</html>

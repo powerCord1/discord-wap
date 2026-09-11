@@ -63,6 +63,18 @@
                         <% } %>
                     <% }) %>
                 <% } %>
+                <% if (m.reactions && m.reactions.length) { %>
+                    <br/>
+                    <% m.reactions.forEach(r => { %>
+                        <anchor>
+                            <go method="get" href="<%= gpath %>/<%= id %>/m/<%= m.id %>/react/<%= r.apiStr %>?action=<%= r.me ? 'remove' : 'add' %>">
+                                <postfield name="token" value="$(token)"/>
+                                <postfield name="action" value="<%= r.me ? 'remove' : 'add' %>"/>
+                            </go>
+                            [<%- sanitize(r.display) %> <%= r.count %>]
+                        </anchor>
+                    <% }) %>
+                <% } %>
             </p>
         <% }) %>
 

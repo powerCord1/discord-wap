@@ -271,6 +271,37 @@ function parseMessageObject(req, res, msg) {
         }
     }
 
+    if (msg.reactions && msg.reactions.length) {
+        result.reactions = msg.reactions.map(r => {
+            const isCustom = Boolean(r.emoji?.id);
+            const emojiApiStr = isCustom ? `${r.emoji.name}:${r.emoji.id}` : r.emoji.name;
+            let emojiDisplay = r.emoji?.name || '';
+            if (isCustom) {
+                let emojiUrl = `https://cdn.discordapp.com/emojis/${r.emoji.id}.png?size=32`;
+                if (process.env.CDN_PROXY) {
+                    emojiUrl = emojiUrl.replace("https://cdn.discordapp.com", process.env.CDN_PROXY);
+                }
+                if (res?.locals?.format === 'wml') {
+                    emojiDisplay = `:${r.emoji.name}:`;
+                } else {
+                    emojiDisplay = `<img src="${emojiUrl}" class="emoji" alt=":${r.emoji.name}:" width="16" height="16" />`;
+                }
+            } else {
+                emojiDisplay = parseMessageContentText(emojiDisplay, res);
+            }
+
+            return {
+                emojiName: r.emoji?.name,
+                emojiId: r.emoji?.id,
+                apiStr: encodeURIComponent(emojiApiStr),
+                rawApiStr: emojiApiStr,
+                display: emojiDisplay,
+                count: r.count,
+                me: Boolean(r.me)
+            };
+        });
+    }
+
     return result;
 }
 
@@ -907,7 +938,8 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
             isOwn,
             content: parsedContent,
             rawContent: rawContent,
-            links: extractLinks(rawContent)
+            links: extractLinks(rawContent),
+            reactions: msg.reactions || []
         });
     });
 
@@ -1233,6 +1265,222 @@ app.all(["/d/:channelid/m/:messageid/delete", "/g/:guildid/c/:channelid/m/:messa
     );
 
     messageCache.delete(messageID);
+
+    res.redirect(`${guildPath}/${channelID}${res.locals.tokenParam}`);
+});
+
+// Toggle reaction on a message
+app.get([
+    "/d/:channelid/m/:messageid/react/:emoji",
+    "/g/:guildid/c/:channelid/m/:messageid/react/:emoji",
+    "/wap/react_toggle"
+], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.query?.gid ?? req.body?.gid;
+    const channelID = req.params.channelid ?? req.query?.id ?? req.body?.id;
+    const messageID = req.params.messageid ?? req.query?.msgid ?? req.body?.msgid;
+    const emojiParam = req.params.emoji ?? req.query?.emoji;
+    const action = req.query?.action ?? req.body?.action;
+    const guildPath = getGuildPath(guildID);
+
+    const rawChannelId = decompressID(channelID, 'channel');
+    const rawMessageId = decompressID(messageID, 'message');
+    const decodedEmoji = decodeURIComponent(emojiParam);
+    const encodedEmoji = encodeURIComponent(decodedEmoji);
+
+    const cached = messageCache.get(messageID);
+    const alreadyReacted = cached?.reactions?.some(r =>
+        Boolean(r.me) && (
+            r.emoji?.name === decodedEmoji ||
+            `${r.emoji?.name}:${r.emoji?.id}` === decodedEmoji ||
+            (r.emoji?.id && decodedEmoji.includes(r.emoji.id))
+        )
+    );
+
+    const shouldRemove = action ? action === 'remove' : Boolean(alreadyReacted);
+
+    try {
+        if (shouldRemove) {
+            await axios.delete(
+                `${DEST_BASE}/channels/${rawChannelId}/messages/${rawMessageId}/reactions/${encodedEmoji}/@me`,
+                { headers: res.locals.headers }
+            );
+            if (cached && cached.reactions) {
+                const target = cached.reactions.find(r =>
+                    r.emoji?.name === decodedEmoji ||
+                    `${r.emoji?.name}:${r.emoji?.id}` === decodedEmoji ||
+                    (r.emoji?.id && decodedEmoji.includes(r.emoji.id))
+                );
+                if (target) {
+                    target.me = false;
+                    target.count = Math.max(0, (target.count || 1) - 1);
+                    if (target.count === 0) {
+                        cached.reactions = cached.reactions.filter(r => r !== target);
+                    }
+                }
+            }
+        } else {
+            await axios.put(
+                `${DEST_BASE}/channels/${rawChannelId}/messages/${rawMessageId}/reactions/${encodedEmoji}/@me`,
+                {},
+                { headers: res.locals.headers }
+            );
+            if (cached && cached.reactions) {
+                const target = cached.reactions.find(r =>
+                    r.emoji?.name === decodedEmoji ||
+                    `${r.emoji?.name}:${r.emoji?.id}` === decodedEmoji ||
+                    (r.emoji?.id && decodedEmoji.includes(r.emoji.id))
+                );
+                if (target) {
+                    target.me = true;
+                    target.count = (target.count || 0) + 1;
+                } else {
+                    const customMatch = decodedEmoji.match(/^([a-zA-Z0-9_]+):(\d+)$/);
+                    if (customMatch) {
+                        cached.reactions.push({
+                            emoji: { name: customMatch[1], id: customMatch[2] },
+                            count: 1,
+                            me: true
+                        });
+                    } else {
+                        cached.reactions.push({
+                            emoji: { name: decodedEmoji, id: null },
+                            count: 1,
+                            me: true
+                        });
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("Reaction toggle error:", e?.message);
+    }
+
+    res.redirect(`${guildPath}/${channelID}${res.locals.tokenParam}`);
+});
+
+// React to message page
+app.get([
+    "/d/:channelid/m/:messageid/react",
+    "/g/:guildid/c/:channelid/m/:messageid/react",
+    "/wap/react"
+], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.query?.gid ?? req.body?.gid;
+    const channelID = req.params.channelid ?? req.query?.id ?? req.body?.id;
+    const messageID = req.params.messageid ?? req.query?.msgid ?? req.body?.msgid;
+    const guildPath = getGuildPath(guildID);
+    const channelName = await getChannelName(req, res, guildID, channelID);
+
+    let cached = messageCache.get(messageID);
+    let authorName = cached?.authorName ?? req.query?.recname ?? req.body?.recname ?? "Unknown";
+    let content = cached?.content ?? (req.query?.content ?? req.body?.content ?? "");
+    let reactions = cached?.reactions ? parseMessageObject(req, res, { reactions: cached.reactions }).reactions : [];
+
+    render(res, "react", {
+        id: channelID,
+        msgid: messageID,
+        gid: guildID,
+        gpath: guildPath,
+        cname: channelName,
+        authorName,
+        content,
+        reactions,
+        token: res.locals.compressedToken,
+    });
+});
+
+// React to message POST
+app.post([
+    "/d/:channelid/m/:messageid/react",
+    "/g/:guildid/c/:channelid/m/:messageid/react",
+    "/wap/react"
+], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.body?.gid ?? req.query?.gid;
+    const channelID = req.params.channelid ?? req.body?.id ?? req.query?.id;
+    const messageID = req.params.messageid ?? req.body?.msgid ?? req.query?.msgid;
+    const guildPath = getGuildPath(guildID);
+
+    const rawChannelId = decompressID(channelID, 'channel');
+    const rawMessageId = decompressID(messageID, 'message');
+
+    let inputEmoji = (req.body?.emoji ?? "").trim();
+    if (inputEmoji) {
+        const customMatch = inputEmoji.match(/^<?a?:?([a-zA-Z0-9_]+):(\d+)>?$/);
+        let resolvedEmoji;
+        if (customMatch) {
+            resolvedEmoji = `${customMatch[1]}:${customMatch[2]}`;
+        } else if (inputEmoji.startsWith(':') && inputEmoji.endsWith(':')) {
+            resolvedEmoji = emoji.replace_colons(inputEmoji);
+        } else {
+            resolvedEmoji = inputEmoji;
+        }
+
+        const encodedEmoji = encodeURIComponent(resolvedEmoji);
+        const cached = messageCache.get(messageID);
+        const alreadyReacted = cached?.reactions?.some(r =>
+            Boolean(r.me) && (
+                r.emoji?.name === resolvedEmoji ||
+                `${r.emoji?.name}:${r.emoji?.id}` === resolvedEmoji ||
+                (r.emoji?.id && resolvedEmoji.includes(r.emoji.id))
+            )
+        );
+
+        try {
+            if (alreadyReacted) {
+                await axios.delete(
+                    `${DEST_BASE}/channels/${rawChannelId}/messages/${rawMessageId}/reactions/${encodedEmoji}/@me`,
+                    { headers: res.locals.headers }
+                );
+                if (cached && cached.reactions) {
+                    const target = cached.reactions.find(r =>
+                        r.emoji?.name === resolvedEmoji ||
+                        `${r.emoji?.name}:${r.emoji?.id}` === resolvedEmoji ||
+                        (r.emoji?.id && resolvedEmoji.includes(r.emoji.id))
+                    );
+                    if (target) {
+                        target.me = false;
+                        target.count = Math.max(0, (target.count || 1) - 1);
+                        if (target.count === 0) {
+                            cached.reactions = cached.reactions.filter(r => r !== target);
+                        }
+                    }
+                }
+            } else {
+                await axios.put(
+                    `${DEST_BASE}/channels/${rawChannelId}/messages/${rawMessageId}/reactions/${encodedEmoji}/@me`,
+                    {},
+                    { headers: res.locals.headers }
+                );
+                if (cached && cached.reactions) {
+                    const target = cached.reactions.find(r =>
+                        r.emoji?.name === resolvedEmoji ||
+                        `${r.emoji?.name}:${r.emoji?.id}` === resolvedEmoji ||
+                        (r.emoji?.id && resolvedEmoji.includes(r.emoji.id))
+                    );
+                    if (target) {
+                        target.me = true;
+                        target.count = (target.count || 0) + 1;
+                    } else {
+                        const customResolvedMatch = resolvedEmoji.match(/^([a-zA-Z0-9_]+):(\d+)$/);
+                        if (customResolvedMatch) {
+                            cached.reactions.push({
+                                emoji: { name: customResolvedMatch[1], id: customResolvedMatch[2] },
+                                count: 1,
+                                me: true
+                            });
+                        } else {
+                            cached.reactions.push({
+                                emoji: { name: resolvedEmoji, id: null },
+                                count: 1,
+                                me: true
+                            });
+                        }
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn("Failed to update reaction:", e?.message);
+        }
+    }
 
     res.redirect(`${guildPath}/${channelID}${res.locals.tokenParam}`);
 });
