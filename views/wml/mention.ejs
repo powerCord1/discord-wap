@@ -1,0 +1,49 @@
+<?xml version="1.0"?>
+<!DOCTYPE wml PUBLIC "-//WAPFORUM//DTD WML 1.1//EN" "http://www.wapforum.org/DTD/wml_1.1.xml">
+<wml>
+    <card id="mention" title="<%- sanitize(placeholder ? `Mention <@${placeholder}>` : 'Mention') %>">
+        <p align="center">
+            <anchor>
+                <go method="get" href="<%= cancelUrl %>">
+                    <postfield name="token" value="$(token)"/>
+                </go>
+                &lt; Cancel
+            </anchor>
+        </p>
+
+        <p>
+            Search:
+            <br/>
+            <input name="q" value="<%= query %>" size="15"/>
+            <br/>
+            <anchor>
+                <go method="get" href="<%= gpath %>/<%= id %>/mention">
+                    <postfield name="token" value="$(token)"/>
+                    <postfield name="q" value="$(q)"/>
+                    <postfield name="text" value="<%= text %>"/>
+                    <% if (locals.placeholder) { %><postfield name="placeholder" value="<%= placeholder %>"/><% } %>
+                    <% if (locals.recipient) { %><postfield name="recipient" value="<%= recipient %>"/><% } %>
+                    <% if (locals.ping !== undefined && locals.ping !== '') { %><postfield name="ping" value="<%= ping %>"/><% } %>
+                    <% if (locals.autoSend) { %><postfield name="autosend" value="1"/><% } %>
+                </go>
+                Search
+            </anchor>
+        </p>
+
+        <% if (members && members.length > 0) { %>
+            <p>
+                <% members.forEach(m => { %>
+                    <anchor>
+                        <go method="get" href="<%= m.selectUrl %>">
+                            <postfield name="token" value="$(token)"/>
+                        </go>
+                        &gt; <%- sanitize(m.displayName) %> (<%= m.tag %>)
+                    </anchor>
+                    <br/>
+                <% }) %>
+            </p>
+        <% } else { %>
+            <p>No users found.</p>
+        <% } %>
+    </card>
+</wml>

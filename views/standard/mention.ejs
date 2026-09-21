@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%- include("include/head.ejs") %>
+    <title><%= placeholder ? `Mention for <@${placeholder}>` : 'Insert mention' %> - <%= cname %></title>
+</head>
+<body>
+    <div class="nav">
+        <a href="<%= cancelUrl %>">&lt; Cancel</a>
+    </div>
+
+    <div class="sb"><%= placeholder ? `Select user for <@${placeholder}>` : 'Insert mention' %></div>
+    <div class="s">
+        <form action="<%= gpath %>/<%= id %>/mention" method="get">
+            <input type="hidden" name="t" value="<%= token %>">
+            <% if (locals.gid) { %><input type="hidden" name="gid" value="<%= gid %>"><% } %>
+            <input type="hidden" name="id" value="<%= id %>">
+            <input type="hidden" name="text" value="<%= text %>">
+            <% if (locals.placeholder) { %><input type="hidden" name="placeholder" value="<%= placeholder %>"><% } %>
+            <% if (locals.recipient) { %><input type="hidden" name="recipient" value="<%= recipient %>"><% } %>
+            <% if (locals.ping !== undefined && locals.ping !== '') { %><input type="hidden" name="ping" value="<%= ping %>"><% } %>
+            <% if (locals.autoSend) { %><input type="hidden" name="autosend" value="1"><% } %>
+
+            <table style="width: 100%; border-collapse: collapse;">
+                <tr>
+                    <td style="width: 100%; padding-right: 4px;">
+                        <input type="text" name="q" value="<%= query %>" placeholder="Search nickname or username" autofocus>
+                    </td>
+                    <td style="width: 1%; white-space: nowrap;">
+                        <input type="submit" value="Search">
+                    </td>
+                </tr>
+            </table>
+        </form>
+    </div>
+
+    <div class="sb">Users</div>
+    <% if (members && members.length > 0) { %>
+        <% members.forEach(m => { %>
+            <div class="s" style="margin-bottom: 2px;">
+                <a href="<%= m.selectUrl %>">&gt; <b><%- fit(m.formattedName) %></b> (<%= m.tag %>)</a>
+            </div>
+        <% }) %>
+    <% } else { %>
+        <div class="s">
+            No users found.
+        </div>
+    <% } %>
+</body>
+</html>

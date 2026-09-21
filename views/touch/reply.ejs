@@ -21,14 +21,17 @@
             <input type="hidden" name="id" value="<%= id %>">
             <input type="hidden" name="recipient" value="<%= rec %>"/>
             <label for="text">Your message:</label>
-            <div><textarea name="text" id="text" rows="5" maxlength="2000"></textarea></div>
+            <div><textarea name="text" id="text" rows="5" maxlength="2000"><%= locals.text || '' %></textarea></div>
             <label for="file">Attach file (max 20MB):</label>
             <div><input type="file" name="file" id="file"></div>
             <div>
-                <input type="checkbox" name="ping" id="ping" value="1">
+                <input type="checkbox" name="ping" id="ping" value="1" <%= (locals.ping === '0' || locals.ping === 0) ? '' : 'checked' %>>
                 <label for="ping">Mention author</label>
             </div>
-            <div><input type="submit" value="Send"></div>
+            <div>
+                <input type="submit" value="Send">
+                <input type="submit" name="mention" value="Insert mention" style="margin-top: 6px;">
+            </div>
         </form>
     </div>
 </body>

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <%- include("include/head.ejs") %>
+    <title><%= placeholder ? `Mention for <@${placeholder}>` : 'Insert mention' %></title>
+</head>
+<body>
+    <table class="nav" id="t">
+        <tr>
+            <td><a href="<%= cancelUrl %>"><img src="/back.png" alt="Back"></a></td>
+            <td class="title"><%= placeholder ? `Mention for <@${placeholder}>` : 'Insert mention' %></td>
+            <td style="min-width: 28px"></td>
+        </tr>
+    </table>
+
+    <div class="section">
+        <form action="<%= gpath %>/<%= id %>/mention" method="get">
+            <input type="hidden" name="t" value="<%= token %>">
+            <% if (locals.gid) { %><input type="hidden" name="gid" value="<%= gid %>"><% } %>
+            <input type="hidden" name="id" value="<%= id %>">
+            <input type="hidden" name="text" value="<%= text %>">
+            <% if (locals.placeholder) { %><input type="hidden" name="placeholder" value="<%= placeholder %>"><% } %>
+            <% if (locals.recipient) { %><input type="hidden" name="recipient" value="<%= recipient %>"><% } %>
+            <% if (locals.ping !== undefined && locals.ping !== '') { %><input type="hidden" name="ping" value="<%= ping %>"><% } %>
+            <% if (locals.autoSend) { %><input type="hidden" name="autosend" value="1"><% } %>
+
+            <table style="width: 100%;">
+                <tr>
+                    <td style="width: 100%; padding-right: 4px;">
+                        <input type="text" name="q" value="<%= query %>" placeholder="Search nickname or username" autofocus style="width: 100%; font-size: 14px; padding: 6px;">
+                    </td>
+                    <td style="width: 1%; white-space: nowrap;">
+                        <input type="submit" value="Search" style="font-size: 14px; padding: 6px 12px;">
+                    </td>
+                </tr>
+            </table>
+        </form>
+    </div>
+
+    <div class="section" style="margin-top: 8px;">
+        <% if (members && members.length > 0) { %>
+            <% members.forEach(m => { %>
+                <a class="hidelink" href="<%= m.selectUrl %>">
+                    <div class="guild" style="padding: 8px; border-bottom: 1px solid #ddd;">
+                        <strong><%- fit(m.formattedName) %></strong> <span class="time" style="font-size: 13px;">(<%= m.tag %>)</span>
+                    </div>
+                </a>
+            <% }) %>
+        <% } else { %>
+            <div class="center" style="padding: 12px;">
+                No users found
+            </div>
+        <% } %>
+    </div>
+</body>
+</html>

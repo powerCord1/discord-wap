@@ -48,6 +48,31 @@ const channelNameCache = new LRUCache({ max: 10000 });
 const channelGuildCache = new LRUCache({ max: 10000 });
 const messageCache = new LRUCache({ max: 10000, ttl: 30 * 60 * 1000 });
 const memberNickCache = new LRUCache({ max: 10000, ttl: 60 * 60 * 1000 });
+const channelMembersHarvestCache = new LRUCache({ max: 500, ttl: 15 * 60 * 1000 });
+const guildMembersHarvestCache = new LRUCache({ max: 500, ttl: 15 * 60 * 1000 });
+const guildMembersCache = new LRUCache({ max: 200, ttl: 60 * 60 * 1000 });
+const userRelationshipsCache = new LRUCache({ max: 100, ttl: 15 * 60 * 1000 });
+
+function recordGuildMember(rawGuildId, id, username, globalName, nick) {
+    if (!rawGuildId || !id) return;
+    let map = guildMembersCache.get(rawGuildId);
+    if (!map) {
+        map = new Map();
+        guildMembersCache.set(rawGuildId, map);
+    }
+    const displayName = (nick || null) ?? (globalName || null) ?? username ?? id;
+    map.set(id, {
+        id,
+        username: username || displayName,
+        globalName: globalName || null,
+        nick: nick || null,
+        displayName
+    });
+    if (nick) {
+        memberNickCache.set(`${rawGuildId}:${id}`, nick);
+    }
+    userCache.set(id, displayName);
+}
 
 async function getGuildMemberNick(rawGuildId, rawUserId, headers) {
     if (!rawGuildId || !rawUserId) return null;
@@ -180,6 +205,9 @@ function parseMessageObject(req, res, msg, rawGuildId = null) {
         edited: msg.edited_timestamp
     }
     if (msg.author) {
+        if (rawGuildId) {
+            recordGuildMember(rawGuildId, msg.author.id, msg.author.username, msg.author.global_name, msg.member?.nick);
+        }
         const author = (msg.member?.nick || null)
             ?? (rawGuildId ? memberNickCache.get(`${rawGuildId}:${msg.author.id}`) : null)
             ?? userCache.get(msg.author.id)
@@ -191,6 +219,11 @@ function parseMessageObject(req, res, msg, rawGuildId = null) {
         }
         result.authorLine = normalizeStripEmoji(req, author + " " + getIdTimestamp(res, msg.id), res);
         result.timestamp = getIdTimestamp(res, msg.id);  // separate timestamp for html version
+    }
+    if (rawGuildId && msg.mentions) {
+        msg.mentions.forEach(m => {
+            recordGuildMember(rawGuildId, m.id, m.username, m.global_name, m.member?.nick);
+        });
     }
     if (msg.type >= 1 && msg.type <= 11) {
         result.isStatus = true;
@@ -217,6 +250,9 @@ function parseMessageObject(req, res, msg, rawGuildId = null) {
             ?? (msg.referenced_message.author?.global_name || null)
             ?? msg.referenced_message.author?.username
             ?? "Unknown";
+        if (rawGuildId && msg.referenced_message.author?.id) {
+            recordGuildMember(rawGuildId, msg.referenced_message.author.id, msg.referenced_message.author.username, msg.referenced_message.author.global_name, msg.referenced_message.member?.nick);
+        }
         result.referenced_message = {
             author: {
                 name: normalizeStripEmoji(req, refAuthor, res),
@@ -585,7 +621,7 @@ async function render(res, viewName, viewVars = {}) {
 }
 
 function getGuildPath(guildID) {
-    return guildID ? `/g/${guildID}/c` : `/d`;
+    return (guildID && guildID !== '@me') ? `/g/${guildID}/c` : `/d`;
 }
 
 app.get("/", (req, res) => {
@@ -725,9 +761,11 @@ async function getChannels(req, res, guildID, useCache) {
         )
         if (useCache) channelCache.set(guildID, channels.data);
 
-        // Populate channel name cache
+        // Populate channel name cache and guild mapping cache
+        const decompressedGuildId = decompressID(guildID, 'server');
         channels.data.forEach(ch => {
             channelNameCache.set(ch.id, '#' + ch.name);
+            channelGuildCache.set(ch.id, decompressedGuildId);
         })
         return channels.data;
     }
@@ -943,6 +981,9 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
             ?? msg.author?.username;
         if (msg.author?.id) {
             userCache.set(msg.author.id, authorDisplayName);
+            if (rawGuildId) {
+                recordGuildMember(rawGuildId, msg.author.id, msg.author.username, msg.author.global_name, msg.member?.nick);
+            }
         }
         if (msg.mentions) {
             msg.mentions.forEach(m => {
@@ -952,8 +993,14 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
                     ?? m.username;
                 if (m.id) {
                     userCache.set(m.id, mentionName);
+                    if (rawGuildId) {
+                        recordGuildMember(rawGuildId, m.id, m.username, m.global_name, m.member?.nick);
+                    }
                 }
             });
+        }
+        if (rawGuildId && msg.referenced_message?.author?.id) {
+            recordGuildMember(rawGuildId, msg.referenced_message.author.id, msg.referenced_message.author.username, msg.referenced_message.author.global_name, msg.referenced_message.member?.nick);
         }
         const compressedId = compressID(msg.id);
         const isOwn = Boolean(msg.author && (msg.author.id === rawUserId || compressID(msg.author.id) === res.locals.userID));
@@ -1033,19 +1080,252 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
     }
 })
 
+async function searchMembers(req, res, rawGuildId, rawChannelId, query = "") {
+    const q = (query || "").trim().toLowerCase();
+    const results = new Map();
+
+    // Check if channel belongs to a guild if rawGuildId is not provided
+    if (!rawGuildId && rawChannelId) {
+        if (channelGuildCache.has(rawChannelId)) {
+            rawGuildId = channelGuildCache.get(rawChannelId);
+        } else {
+            try {
+                const chRes = await axios.get(
+                    `${DEST_BASE}/channels/${rawChannelId}`,
+                    { headers: res.locals.headers }
+                );
+                if (chRes.data?.guild_id) {
+                    rawGuildId = chRes.data.guild_id;
+                    channelGuildCache.set(rawChannelId, rawGuildId);
+                }
+            } catch (e) {}
+        }
+    }
+
+    function addMember(id, username, globalName, nick) {
+        if (!id) return;
+        const displayName = (nick || null) ?? (globalName || null) ?? username ?? id;
+        results.set(id, {
+            id,
+            username: username || displayName,
+            globalName: globalName || null,
+            nick: nick || null,
+            displayName
+        });
+        if (rawGuildId) {
+            recordGuildMember(rawGuildId, id, username, globalName, nick);
+        }
+        userCache.set(id, displayName);
+    }
+
+    if (rawGuildId) {
+        // --- GUILD MODE: Only include verified members of this specific guild ---
+
+        // 1. If query is a numeric ID (15-20 digits), try direct member fetch in this guild
+        if (/^\d{15,20}$/.test(q)) {
+            try {
+                const memRes = await axios.get(
+                    `${DEST_BASE}/guilds/${rawGuildId}/members/${q}`,
+                    { headers: res.locals.headers }
+                );
+                if (memRes.data) {
+                    const u = memRes.data.user || {};
+                    addMember(u.id || q, u.username, u.global_name, memRes.data.nick);
+                }
+            } catch (e) {}
+        }
+
+        // 2. Try Discord Guild Members Search & Member List APIs
+        if (q.length > 0) {
+            try {
+                const searchRes = await axios.get(
+                    `${DEST_BASE}/guilds/${rawGuildId}/members/search?query=${encodeURIComponent(query.trim())}&limit=100`,
+                    { headers: res.locals.headers }
+                );
+                if (Array.isArray(searchRes.data)) {
+                    searchRes.data.forEach(m => {
+                        if (m?.user?.id) {
+                            addMember(m.user.id, m.user.username, m.user.global_name, m.nick);
+                        }
+                    });
+                }
+            } catch (e) {}
+        }
+
+        if (!guildMembersHarvestCache.has(rawGuildId)) {
+            try {
+                const membersRes = await axios.get(
+                    `${DEST_BASE}/guilds/${rawGuildId}/members?limit=1000`,
+                    { headers: res.locals.headers }
+                );
+                if (Array.isArray(membersRes.data)) {
+                    membersRes.data.forEach(m => {
+                        if (m?.user?.id) {
+                            addMember(m.user.id, m.user.username, m.user.global_name, m.nick);
+                        }
+                    });
+                    guildMembersHarvestCache.set(rawGuildId, true);
+                }
+            } catch (e) {}
+        }
+
+        // 3. Harvest channel messages (up to 100 recent messages) in this channel
+        if (rawChannelId && !channelMembersHarvestCache.has(rawChannelId)) {
+            try {
+                const msgsRes = await axios.get(
+                    `${DEST_BASE}/channels/${rawChannelId}/messages?limit=100`,
+                    { headers: res.locals.headers }
+                );
+                if (Array.isArray(msgsRes.data)) {
+                    msgsRes.data.forEach(msg => {
+                        if (msg.author?.id) {
+                            addMember(msg.author.id, msg.author.username, msg.author.global_name, msg.member?.nick);
+                        }
+                        if (msg.referenced_message?.author?.id) {
+                            addMember(msg.referenced_message.author.id, msg.referenced_message.author.username, msg.referenced_message.author.global_name, msg.referenced_message.member?.nick);
+                        }
+                        if (msg.mentions) {
+                            msg.mentions.forEach(m => {
+                                addMember(m.id, m.username, m.global_name, m.member?.nick);
+                            });
+                        }
+                    });
+                    channelMembersHarvestCache.set(rawChannelId, true);
+                }
+            } catch (e) {}
+        }
+
+        // 4. Include members previously cached for this specific guild
+        const cachedGuildMembers = guildMembersCache.get(rawGuildId);
+        if (cachedGuildMembers) {
+            for (const [id, m] of cachedGuildMembers.entries()) {
+                if (!results.has(id)) {
+                    results.set(id, m);
+                }
+            }
+        }
+    } else {
+        // --- DM / NON-GUILD MODE: Search DM recipients, channel messages, friends, and cache ---
+
+        // 1. If query is a numeric ID (15-20 digits), try direct user fetch
+        if (/^\d{15,20}$/.test(q)) {
+            try {
+                const userRes = await axios.get(
+                    `${DEST_BASE}/users/${q}`,
+                    { headers: res.locals.headers }
+                );
+                if (userRes.data) {
+                    addMember(userRes.data.id, userRes.data.username, userRes.data.global_name, null);
+                }
+            } catch (e) {}
+        }
+
+        // 2. Fetch DM / Group DM recipients
+        if (rawChannelId) {
+            try {
+                const chRes = await axios.get(
+                    `${DEST_BASE}/channels/${rawChannelId}`,
+                    { headers: res.locals.headers }
+                );
+                if (chRes.data?.recipients) {
+                    chRes.data.recipients.forEach(u => {
+                        addMember(u.id, u.username, u.global_name, null);
+                    });
+                }
+            } catch (e) {}
+        }
+
+        // 3. Harvest channel messages (up to 100 recent messages)
+        if (rawChannelId && !channelMembersHarvestCache.has(rawChannelId)) {
+            try {
+                const msgsRes = await axios.get(
+                    `${DEST_BASE}/channels/${rawChannelId}/messages?limit=100`,
+                    { headers: res.locals.headers }
+                );
+                if (Array.isArray(msgsRes.data)) {
+                    msgsRes.data.forEach(msg => {
+                        if (msg.author?.id) {
+                            addMember(msg.author.id, msg.author.username, msg.author.global_name, null);
+                        }
+                        if (msg.referenced_message?.author?.id) {
+                            addMember(msg.referenced_message.author.id, msg.referenced_message.author.username, msg.referenced_message.author.global_name, null);
+                        }
+                        if (msg.mentions) {
+                            msg.mentions.forEach(m => {
+                                addMember(m.id, m.username, m.global_name, null);
+                            });
+                        }
+                    });
+                    channelMembersHarvestCache.set(rawChannelId, true);
+                }
+            } catch (e) {}
+        }
+
+        // 4. Fetch user's friends (Relationships)
+        const tokenKey = res.locals.authToken || res.locals.token;
+        if (tokenKey && !userRelationshipsCache.has(tokenKey)) {
+            try {
+                const relRes = await axios.get(
+                    `${DEST_BASE}/users/@me/relationships`,
+                    { headers: res.locals.headers }
+                );
+                if (Array.isArray(relRes.data)) {
+                    relRes.data.forEach(r => {
+                        if (r?.user?.id) {
+                            addMember(r.user.id, r.user.username, r.user.global_name, null);
+                        }
+                    });
+                    userRelationshipsCache.set(tokenKey, true);
+                }
+            } catch (e) {}
+        }
+
+        // 5. Include all cached users from userCache
+        for (const [id, displayName] of userCache.entries()) {
+            if (!results.has(id)) {
+                addMember(id, displayName, displayName, null);
+            }
+        }
+    }
+
+    // Filter results if query is provided
+    let list = Array.from(results.values());
+    if (q.length > 0) {
+        list = list.filter(m => {
+            const nick = (m.nick || "").toLowerCase();
+            const username = (m.username || "").toLowerCase();
+            const globalName = (m.globalName || "").toLowerCase();
+            const displayName = (m.displayName || "").toLowerCase();
+            const id = (m.id || "").toLowerCase();
+            return nick.includes(q) || username.includes(q) || globalName.includes(q) || displayName.includes(q) || id === q;
+        });
+    }
+
+    // Sort alphabetically by displayName
+    list.sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+    return list;
+}
+
 app.get(["/d/:channelid/send", "/g/:guildid/c/:channelid/send", "/wap/send"], getToken, async (req, res) => {
     const guildID = req.params.guildid ?? req.query.gid;
     const channelID = req.params.channelid ?? req.query.id;
     const guildPath = getGuildPath(guildID);
     const channelName = await getChannelName(req, res, guildID, channelID);
+    const text = req.query.text ?? "";
+    const recipient = req.query.recipient ?? "";
+    const ping = req.query.ping;
 
     render(res, "send", {
         id: channelID,
         cname: channelName,
         gid: guildID,
-        gpath: guildPath
-    })
-})
+        gpath: guildPath,
+        text,
+        recipient,
+        ping,
+    });
+});
 
 app.get(["/d/:channelid/reply/:messageid", "/g/:guildid/c/:channelid/reply/:messageid", "/wap/reply"], getToken, async (req, res) => {
     const guildID = req.params.guildid ?? req.query.gid;
@@ -1053,6 +1333,8 @@ app.get(["/d/:channelid/reply/:messageid", "/g/:guildid/c/:channelid/reply/:mess
     const messageID = req.params.messageid ?? req.query.rec;
     const guildPath = getGuildPath(guildID);
     const channelName = await getChannelName(req, res, guildID, channelID);
+    const text = req.query.text ?? "";
+    const ping = req.query.ping;
 
     let recname = req.query.recname;
     if (!recname && messageCache.has(messageID)) {
@@ -1067,8 +1349,170 @@ app.get(["/d/:channelid/reply/:messageid", "/g/:guildid/c/:channelid/reply/:mess
         gid: guildID,
         gpath: guildPath,
         recname: formattedRecname,
-    })
-})
+        text,
+        ping,
+    });
+});
+
+// Mention search page
+app.all([
+    "/d/:channelid/mention",
+    "/g/:guildid/c/:channelid/mention",
+    "/wap/mention"
+], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.query?.gid ?? req.body?.gid;
+    const channelID = req.params.channelid ?? req.query?.id ?? req.body?.id;
+    const text = req.query?.text ?? req.body?.text ?? "";
+    const q = req.query?.q ?? req.body?.q ?? "";
+    const placeholder = req.query?.placeholder ?? req.body?.placeholder ?? "";
+    const recipient = req.query?.recipient ?? req.body?.recipient ?? "";
+    const ping = req.query?.ping ?? req.body?.ping;
+    const autosend = (req.query?.autosend ?? req.body?.autosend ?? "") === "1";
+
+    const guildPath = getGuildPath(guildID);
+    const channelName = await getChannelName(req, res, guildID, channelID);
+
+    const rawChannelId = decompressID(channelID, 'channel');
+    const rawGuildId = (guildID && guildID !== '@me') ? decompressID(guildID, 'server') : (channelGuildCache.get(rawChannelId) || null);
+
+    const members = await searchMembers(req, res, rawGuildId, rawChannelId, q);
+
+    const memberList = members.map(m => {
+        let selectUrl = `${guildPath}/${channelID}/mention/select?uid=${m.id}&text=${encodeURIComponent(text)}`;
+        if (placeholder) selectUrl += `&placeholder=${encodeURIComponent(placeholder)}`;
+        if (recipient) selectUrl += `&recipient=${encodeURIComponent(recipient)}`;
+        if (ping !== undefined && ping !== '') selectUrl += `&ping=${encodeURIComponent(ping)}`;
+        if (autosend) selectUrl += `&autosend=1`;
+        if (guildID) selectUrl += `&gid=${guildID}`;
+        selectUrl += `&id=${channelID}`;
+        selectUrl += res.locals.tokenParam.replace('?', '&');
+
+        return {
+            ...m,
+            formattedName: normalizeStripEmoji(req, m.displayName, res),
+            tag: `@${m.username}`,
+            selectUrl
+        };
+    });
+
+    let cancelUrl;
+    if (recipient) {
+        cancelUrl = `${guildPath}/${channelID}/reply/${recipient}?text=${encodeURIComponent(text)}`;
+        if (ping !== undefined && ping !== '') cancelUrl += `&ping=${encodeURIComponent(ping)}`;
+        if (guildID) cancelUrl += `&gid=${guildID}`;
+        cancelUrl += `&id=${channelID}`;
+        cancelUrl += res.locals.tokenParam.replace('?', '&');
+    } else {
+        cancelUrl = `${guildPath}/${channelID}/send?text=${encodeURIComponent(text)}`;
+        if (guildID) cancelUrl += `&gid=${guildID}`;
+        cancelUrl += `&id=${channelID}`;
+        cancelUrl += res.locals.tokenParam.replace('?', '&');
+    }
+
+    render(res, "mention", {
+        id: channelID,
+        gid: guildID,
+        gpath: guildPath,
+        cname: channelName,
+        text,
+        query: q,
+        placeholder,
+        recipient,
+        ping: ping !== undefined ? String(ping) : '',
+        autoSend: autosend,
+        members: memberList,
+        cancelUrl,
+        token: res.locals.compressedToken,
+    });
+});
+
+// Select a mention
+app.all([
+    "/d/:channelid/mention/select",
+    "/g/:guildid/c/:channelid/mention/select",
+    "/wap/mention/select"
+], getToken, async (req, res) => {
+    const guildID = req.params.guildid ?? req.query?.gid ?? req.body?.gid;
+    const channelID = req.params.channelid ?? req.query?.id ?? req.body?.id;
+    const selectedUserId = req.query?.uid ?? req.body?.uid;
+    const text = req.query?.text ?? req.body?.text ?? "";
+    const placeholder = req.query?.placeholder ?? req.body?.placeholder ?? "";
+    const recipient = req.query?.recipient ?? req.body?.recipient ?? "";
+    const ping = req.query?.ping ?? req.body?.ping;
+    const autosend = (req.query?.autosend ?? req.body?.autosend ?? "") === "1";
+
+    const guildPath = getGuildPath(guildID);
+    const rawChannelId = decompressID(channelID, 'channel');
+
+    let updatedText = text;
+    if (placeholder) {
+        const placeholderRegex = new RegExp(`<@${placeholder}>`, 'g');
+        updatedText = updatedText.replace(placeholderRegex, `<@${selectedUserId}>`);
+    } else {
+        if (updatedText.length && !updatedText.endsWith(' ')) {
+            updatedText += ' ';
+        }
+        updatedText += `<@${selectedUserId}> `;
+    }
+
+    // Check if any placeholders still remain
+    const remainingPlaceholders = updatedText.match(/<@(\d{1,16})>/g);
+    if (remainingPlaceholders && remainingPlaceholders.length > 0) {
+        const nextPlaceholder = remainingPlaceholders[0].replace(/^<@|>$/g, '');
+        let nextRedirect = `${guildPath}/${channelID}/mention?placeholder=${encodeURIComponent(nextPlaceholder)}&text=${encodeURIComponent(updatedText)}`;
+        if (recipient) nextRedirect += `&recipient=${encodeURIComponent(recipient)}`;
+        if (ping !== undefined && ping !== '') nextRedirect += `&ping=${encodeURIComponent(ping)}`;
+        if (autosend) nextRedirect += `&autosend=1`;
+        if (guildID) nextRedirect += `&gid=${guildID}`;
+        nextRedirect += `&id=${channelID}`;
+        nextRedirect += res.locals.tokenParam.replace('?', '&');
+        res.redirect(nextRedirect);
+        return;
+    }
+
+    // If no more placeholders remain and autosend was requested, send message directly
+    if (autosend) {
+        const send = {
+            content: updatedText,
+            flags: 0,
+            mobile_network_type: "unknown",
+            tts: false
+        };
+        if (recipient) {
+            send.message_reference = {
+                message_id: String(decompressID(recipient, 'message'))
+            };
+        }
+        if (Number(ping) === 0) {
+            send.allowed_mentions = {
+                replied_user: false
+            };
+        }
+        await axios.post(
+            `${DEST_BASE}/channels/${rawChannelId}/messages`,
+            send,
+            { headers: res.locals.headers }
+        );
+        res.redirect(`${guildPath}/${channelID}${res.locals.tokenParam}`);
+        return;
+    }
+
+    // Otherwise return to send / reply page with the mention inserted in text
+    if (recipient) {
+        let replyRedirect = `${guildPath}/${channelID}/reply/${recipient}?text=${encodeURIComponent(updatedText)}`;
+        if (ping !== undefined && ping !== '') replyRedirect += `&ping=${encodeURIComponent(ping)}`;
+        if (guildID) replyRedirect += `&gid=${guildID}`;
+        replyRedirect += `&id=${channelID}`;
+        replyRedirect += res.locals.tokenParam.replace('?', '&');
+        res.redirect(replyRedirect);
+    } else {
+        let sendRedirect = `${guildPath}/${channelID}/send?text=${encodeURIComponent(updatedText)}`;
+        if (guildID) sendRedirect += `&gid=${guildID}`;
+        sendRedirect += `&id=${channelID}`;
+        sendRedirect += res.locals.tokenParam.replace('?', '&');
+        res.redirect(sendRedirect);
+    }
+});
 
 // Send message (with attachment support)
 app.post(["/d/:channelid/send", "/g/:guildid/c/:channelid/send", "/wap/send"], upload.single('file'), getToken, async (req, res) => {
@@ -1076,6 +1520,33 @@ app.post(["/d/:channelid/send", "/g/:guildid/c/:channelid/send", "/wap/send"], u
     const channelID = req.params.channelid ?? req.body?.id ?? req.query?.id;
     const guildPath = getGuildPath(guildID);
     const rawChannelId = decompressID(channelID, 'channel');
+    const text = req.body?.text || "";
+
+    // 1. If "Insert mention" was clicked
+    if (req.body?.mention) {
+        let mentionRedirect = `${guildPath}/${channelID}/mention?text=${encodeURIComponent(text)}`;
+        if (req.body?.recipient) mentionRedirect += `&recipient=${encodeURIComponent(req.body.recipient)}`;
+        if (req.body?.ping !== undefined) mentionRedirect += `&ping=${encodeURIComponent(req.body.ping)}`;
+        if (guildID) mentionRedirect += `&gid=${guildID}`;
+        mentionRedirect += `&id=${channelID}`;
+        mentionRedirect += res.locals.tokenParam.replace('?', '&');
+        res.redirect(mentionRedirect);
+        return;
+    }
+
+    // 2. Check for placeholders like <@1>, <@2>, etc. (placeholder index <= 16 digits)
+    const placeholders = text.match(/<@(\d{1,16})>/g);
+    if (placeholders && placeholders.length > 0) {
+        const firstPlaceholder = placeholders[0].replace(/^<@|>$/g, '');
+        let mentionRedirect = `${guildPath}/${channelID}/mention?placeholder=${encodeURIComponent(firstPlaceholder)}&text=${encodeURIComponent(text)}&autosend=1`;
+        if (req.body?.recipient) mentionRedirect += `&recipient=${encodeURIComponent(req.body.recipient)}`;
+        if (req.body?.ping !== undefined) mentionRedirect += `&ping=${encodeURIComponent(req.body.ping)}`;
+        if (guildID) mentionRedirect += `&gid=${guildID}`;
+        mentionRedirect += `&id=${channelID}`;
+        mentionRedirect += res.locals.tokenParam.replace('?', '&');
+        res.redirect(mentionRedirect);
+        return;
+    }
 
     let attachments = null;
     if (req.file) {
@@ -1110,7 +1581,7 @@ app.post(["/d/:channelid/send", "/g/:guildid/c/:channelid/send", "/wap/send"], u
     }
 
     const send = {
-        content: req.body?.text || "",
+        content: text,
         flags: 0,
         mobile_network_type: "unknown",
         tts: false
