@@ -60,11 +60,13 @@ async function getGuildMemberNick(rawGuildId, rawUserId, headers) {
             `${DEST_BASE}/guilds/${rawGuildId}/members/${rawUserId}`,
             { headers }
         );
-        const nick = res.data?.nick || null;
+        const nick = res.data?.nick || res.data?.user?.global_name || null;
         memberNickCache.set(cacheKey, nick);
         return nick;
     } catch (e) {
-        memberNickCache.set(cacheKey, null);
+        if (e.response?.status === 404) {
+            memberNickCache.set(cacheKey, null);
+        }
         return null;
     }
 }
@@ -138,17 +140,18 @@ function normalizeStr(str, convertEmoji = false, res = null) {
     return str;
 }
 
-function normalizeStripEmoji(req, str) {
-    str = normalizeStr(str, false, req?.res);
+function normalizeStripEmoji(req, str, res = null) {
+    res = res || req?.res;
+    if (res?.locals?.theme?.stripEmoji) {
+        const strConvEmoji = normalizeStr(str, true, res);
+        if (str == strConvEmoji) return str;
 
-    if (!req?.res?.locals?.theme?.stripEmoji) return str;
+        const strNoEmoji = strConvEmoji.replace(/:\w+:/g, '');
+        if (strNoEmoji.length) return strNoEmoji;
+        return strConvEmoji;
+    }
 
-    const strConvEmoji = normalizeStr(str, true, req?.res);
-    if (str == strConvEmoji) return str;
-
-    const strNoEmoji = strConvEmoji.replace(/:\w+:/g, '');
-    if (strNoEmoji.length) return strNoEmoji;
-    return strConvEmoji;
+    return normalizeStr(str, true, res);
 }
 
 function getError(e) {
@@ -169,20 +172,24 @@ function getError(e) {
     return e.message;
 }
 
-function parseMessageObject(req, res, msg) {
+function parseMessageObject(req, res, msg, rawGuildId = null) {
     const result = {
-        id: compressID(msg.id),
+        id: msg.id ? compressID(msg.id) : undefined,
         showAuthor: msg.showAuthor,
         avatar: msg.avatar,
         edited: msg.edited_timestamp
     }
     if (msg.author) {
-        const author = msg.member?.nick ?? msg.author.global_name ?? msg.author.username;
+        const author = (msg.member?.nick || null)
+            ?? (rawGuildId ? memberNickCache.get(`${rawGuildId}:${msg.author.id}`) : null)
+            ?? userCache.get(msg.author.id)
+            ?? (msg.author.global_name || null)
+            ?? msg.author.username;
         result.author = {
-            id: compressID(msg.author.id),
-            name: normalizeStripEmoji(req, author),
+            id: msg.author.id ? compressID(msg.author.id) : undefined,
+            name: normalizeStripEmoji(req, author, res),
         }
-        result.authorLine = normalizeStripEmoji(req, author + " " + getIdTimestamp(res, msg.id));
+        result.authorLine = normalizeStripEmoji(req, author + " " + getIdTimestamp(res, msg.id), res);
         result.timestamp = getIdTimestamp(res, msg.id);  // separate timestamp for html version
     }
     if (msg.type >= 1 && msg.type <= 11) {
@@ -191,23 +198,29 @@ function parseMessageObject(req, res, msg) {
     }
 
     // Parse content 
-    result.content = parseMessageContent(res, msg);
+    result.content = parseMessageContent(res, msg, false, rawGuildId);
 
     if (msg.referenced_message) {
-        let content = parseMessageContent(res, msg.referenced_message, true);
+        let content = parseMessageContent(res, msg.referenced_message, true, rawGuildId);
 
         // Replace newlines with spaces (reply is shown as one line)
         content = content.replace(/\r\n|\r|\n/gm, "  ");
 
-        const limit = res.locals.theme.replyPreviewLength;
+        const limit = res?.locals?.theme?.replyPreviewLength ?? 50;
 
         if (content && content.length > limit) {
             content = content.slice(0, limit - 3).trim() + '...';
         }
+        const refAuthor = (msg.referenced_message.member?.nick || null)
+            ?? (rawGuildId ? memberNickCache.get(`${rawGuildId}:${msg.referenced_message.author?.id}`) : null)
+            ?? userCache.get(msg.referenced_message.author?.id)
+            ?? (msg.referenced_message.author?.global_name || null)
+            ?? msg.referenced_message.author?.username
+            ?? "Unknown";
         result.referenced_message = {
             author: {
-                name: normalizeStripEmoji(req, msg.referenced_message.member?.nick ?? msg.referenced_message.author.global_name ?? msg.referenced_message.author.username),
-                id: compressID(msg.referenced_message.author.id),
+                name: normalizeStripEmoji(req, refAuthor, res),
+                id: msg.referenced_message.author?.id ? compressID(msg.referenced_message.author.id) : undefined,
             },
             content
         }
@@ -305,8 +318,12 @@ function parseMessageObject(req, res, msg) {
     return result;
 }
 
-function parseMessageContent(res, msg, singleLine = false) {
-    const target = msg.mentions?.[0]?.member?.nick ?? msg.mentions?.[0]?.global_name ?? msg.mentions?.[0]?.username;
+function parseMessageContent(res, msg, singleLine = false, rawGuildId = null) {
+    const target = (msg.mentions?.[0]?.member?.nick || null)
+        ?? (rawGuildId ? memberNickCache.get(`${rawGuildId}:${msg.mentions?.[0]?.id}`) : null)
+        ?? userCache.get(msg.mentions?.[0]?.id)
+        ?? (msg.mentions?.[0]?.global_name || null)
+        ?? msg.mentions?.[0]?.username;
     switch (msg.type) {
         case 1: return `added ${target} to the group`;
         case 2: return `removed ${target} from the group`;
@@ -865,8 +882,22 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
     const messagesGet = (await axios.get(proxyUrl, { headers: res.locals.headers })).data;
 
     // Fetch server-specific nicknames if in a guild
-    const rawGuildId = (guildID && guildID !== '@me') ? decompressID(guildID, 'server') : null;
+    const rawGuildId = (guildID && guildID !== '@me') ? decompressID(guildID, 'server') : (channelGuildCache.get(rawChannelId) || null);
     if (rawGuildId) {
+        // First populate memberNickCache from any messages or mentions that already include member.nick
+        messagesGet.forEach(msg => {
+            if (msg.author?.id && msg.member?.nick) {
+                memberNickCache.set(`${rawGuildId}:${msg.author.id}`, msg.member.nick);
+            }
+            if (msg.mentions) {
+                msg.mentions.forEach(m => {
+                    if (m.id && m.member?.nick) {
+                        memberNickCache.set(`${rawGuildId}:${m.id}`, m.member.nick);
+                    }
+                });
+            }
+        });
+
         const userIds = new Set();
         messagesGet.forEach(msg => {
             if (msg.author?.id) userIds.add(msg.author.id);
@@ -906,12 +937,22 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
     // Populate username and message cache
     const rawUserId = getRawUserIdFromToken(res.locals.token);
     messagesGet.forEach(msg => {
-        const authorDisplayName = msg.member?.nick ?? msg.author.global_name ?? msg.author.username;
-        userCache.set(msg.author.id, authorDisplayName);
+        const authorDisplayName = (msg.member?.nick || null)
+            ?? (rawGuildId ? memberNickCache.get(`${rawGuildId}:${msg.author?.id}`) : null)
+            ?? (msg.author?.global_name || null)
+            ?? msg.author?.username;
+        if (msg.author?.id) {
+            userCache.set(msg.author.id, authorDisplayName);
+        }
         if (msg.mentions) {
             msg.mentions.forEach(m => {
-                const mentionName = m.member?.nick ?? m.global_name ?? m.username;
-                userCache.set(m.id, mentionName);
+                const mentionName = (m.member?.nick || null)
+                    ?? (rawGuildId ? memberNickCache.get(`${rawGuildId}:${m.id}`) : null)
+                    ?? (m.global_name || null)
+                    ?? m.username;
+                if (m.id) {
+                    userCache.set(m.id, mentionName);
+                }
             });
         }
         const compressedId = compressID(msg.id);
@@ -923,7 +964,7 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
                 rawContent = [rich.title, rich.description].filter(Boolean).join("\n");
             }
         }
-        let parsedContent = parseMessageContent(res, msg);
+        let parsedContent = parseMessageContent(res, msg, false, rawGuildId);
         if ((!parsedContent || parsedContent === "(unsupported message)") && msg.embeds?.length) {
             const rich = msg.embeds.find(e => e.type === 'rich');
             if (rich) {
@@ -966,7 +1007,7 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
         above = m;
     })
 
-    const messages = messagesGet.map(m => parseMessageObject(req, res, m));
+    const messages = messagesGet.map(m => parseMessageObject(req, res, m, rawGuildId));
 
     render(res, "channel", {
         page: req.query.p ?? 0,
@@ -1017,6 +1058,7 @@ app.get(["/d/:channelid/reply/:messageid", "/g/:guildid/c/:channelid/reply/:mess
     if (!recname && messageCache.has(messageID)) {
         recname = messageCache.get(messageID).authorName;
     }
+    const formattedRecname = normalizeStripEmoji(req, recname ?? "Unknown", res);
 
     render(res, "reply", {
         id: channelID,
@@ -1024,7 +1066,7 @@ app.get(["/d/:channelid/reply/:messageid", "/g/:guildid/c/:channelid/reply/:mess
         rec: messageID,
         gid: guildID,
         gpath: guildPath,
-        recname: recname ?? "Unknown",
+        recname: formattedRecname,
     })
 })
 
@@ -1105,7 +1147,8 @@ app.all(["/d/:channelid/m/:messageid", "/g/:guildid/c/:channelid/m/:messageid", 
     const channelName = await getChannelName(req, res, guildID, channelID);
 
     let cached = messageCache.get(messageID);
-    let authorName = cached?.authorName ?? req.query?.recname ?? req.body?.recname ?? "Unknown";
+    let rawAuthorName = cached?.authorName ?? req.query?.recname ?? req.body?.recname ?? "Unknown";
+    let authorName = normalizeStripEmoji(req, rawAuthorName, res);
     let isOwn = cached?.isOwn ?? (req.query?.isOwn === '1' || req.body?.isOwn === '1');
     let content = cached?.content ?? (req.query?.content ?? req.body?.content ?? "");
     let rawContent = cached?.rawContent ?? (req.query?.rawContent ?? req.body?.rawContent ?? "");
@@ -1137,7 +1180,7 @@ app.all(["/d/:channelid/m/:messageid", "/g/:guildid/c/:channelid/m/:messageid", 
         rawContent,
         links,
         rec: messageID,
-        recname: authorName,
+        recname: rawAuthorName,
         token: res.locals.compressedToken,
     });
 });
@@ -1151,7 +1194,8 @@ app.all(["/d/:channelid/m/:messageid/share", "/g/:guildid/c/:channelid/m/:messag
     const channelName = await getChannelName(req, res, guildID, channelID);
 
     let cached = messageCache.get(messageID);
-    let authorName = cached?.authorName ?? req.query?.recname ?? req.body?.recname ?? "Unknown";
+    let rawAuthorName = cached?.authorName ?? req.query?.recname ?? req.body?.recname ?? "Unknown";
+    let authorName = normalizeStripEmoji(req, rawAuthorName, res);
     let rawContent = cached?.rawContent ?? (req.query?.rawContent ?? req.body?.rawContent ?? "");
 
     const rawChannelId = decompressID(channelID, 'channel');
@@ -1172,7 +1216,7 @@ app.all(["/d/:channelid/m/:messageid/share", "/g/:guildid/c/:channelid/m/:messag
     if (timeStr.endsWith('A')) timeStr = timeStr.slice(0, -1) + 'am';
     else if (timeStr.endsWith('P')) timeStr = timeStr.slice(0, -1) + 'pm';
 
-    const shareBodyText = `${authorName} @ ${timeStr}:\n${rawContent}`;
+    const shareBodyText = `${rawAuthorName} @ ${timeStr}:\n${rawContent}`;
     const messageLink = `https://discord.com/channels/${rawServerId}/${rawChannelId}/${rawMessageId}`;
     const shareLinkUrl = `sms:?body=${encodeURIComponent(messageLink)}`;
     const shareTextUrl = `sms:?body=${encodeURIComponent(shareBodyText)}`;
@@ -1371,7 +1415,8 @@ app.get([
     const channelName = await getChannelName(req, res, guildID, channelID);
 
     let cached = messageCache.get(messageID);
-    let authorName = cached?.authorName ?? req.query?.recname ?? req.body?.recname ?? "Unknown";
+    let rawAuthorName = cached?.authorName ?? req.query?.recname ?? req.body?.recname ?? "Unknown";
+    let authorName = normalizeStripEmoji(req, rawAuthorName, res);
     let content = cached?.content ?? (req.query?.content ?? req.body?.content ?? "");
     let reactions = cached?.reactions ? parseMessageObject(req, res, { reactions: cached.reactions }).reactions : [];
 

@@ -18,7 +18,13 @@ function decompressID(id, type) {
 }
 
 function compressID(id) {
-    id = BigInt(id);
+    if (id === undefined || id === null || id === "") return id;
+
+    try {
+        id = BigInt(id);
+    } catch (e) {
+        return id;
+    }
 
     const arr = [
         Number(id >> 56n),

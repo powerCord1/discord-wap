@@ -123,9 +123,46 @@ function oneLine(req, res, str, charsUsed = 0) {
     if (!res.locals.theme.oneLineTruncate) return str;
 
     const chars = getCharactersPerLine(req, res) - charsUsed;
+    if (chars <= 0) return "...";
 
-    if (str.length > chars) return str.substring(0, chars - 1).trimEnd() + "...";
-    return str;
+    const tokens = str.split(/(<[^>]+>)/g).filter(Boolean);
+    let totalVisible = 0;
+
+    for (const token of tokens) {
+        if (token.startsWith('<') && token.endsWith('>')) {
+            totalVisible += 1;
+        } else {
+            totalVisible += token.length;
+        }
+    }
+
+    if (totalVisible <= chars) return str;
+
+    const limit = chars - 1;
+    let currentVisible = 0;
+    let result = '';
+
+    for (const token of tokens) {
+        if (token.startsWith('<') && token.endsWith('>')) {
+            if (currentVisible + 1 > limit) {
+                break;
+            }
+            result += token;
+            currentVisible += 1;
+        } else {
+            const remaining = limit - currentVisible;
+            if (token.length > remaining) {
+                result += token.substring(0, remaining);
+                currentVisible += remaining;
+                break;
+            } else {
+                result += token;
+                currentVisible += token.length;
+            }
+        }
+    }
+
+    return result.trimEnd() + "...";
 }
 
 function stringFormatMiddleware(req, res, next) {
