@@ -262,9 +262,9 @@ function parseMessageObject(req, res, msg, rawGuildId = null) {
         }
     }
 
-    if (res.locals.theme.showAttachments && msg.attachments) {
+    if (msg.attachments) {
         result.attachments = msg.attachments.map(att => {
-            const isImage = att.content_type?.includes('image');
+            const isImage = Boolean(att.content_type?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(att.filename || ''));
             let url;
             if (isImage) {
                 let width = att.width;
@@ -274,7 +274,7 @@ function parseMessageObject(req, res, msg, rawGuildId = null) {
                     width = Math.round(width / ratio);
                     height = Math.round(height / ratio);
                 }
-                url = att.proxy_url.replace(/^https/, 'http') + `width=${width}&height=${height}`;
+                url = att.proxy_url ? (att.proxy_url.replace(/^https/, 'http') + `width=${width}&height=${height}`) : att.url;
             }
             else if (process.env.CDN_PROXY) {
                 url = att.url.replace("https://cdn.discordapp.com", process.env.CDN_PROXY);
@@ -284,10 +284,14 @@ function parseMessageObject(req, res, msg, rawGuildId = null) {
             }
 
             return {
+                id: att.id,
                 filename: att.filename,
-                url
-            }
-        })
+                url,
+                isImage,
+                size: att.size,
+                contentType: att.content_type
+            };
+        });
     }
 
     if (msg.embeds) {
@@ -1018,6 +1022,7 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
                 parsedContent = [rich.title, rich.description].filter(Boolean).map(t => parseMessageContentText(t, res)).join("\n");
             }
         }
+        const parsedMsg = parseMessageObject(req, res, msg, rawGuildId);
         messageCache.set(compressedId, {
             id: compressedId,
             rawId: msg.id,
@@ -1027,6 +1032,7 @@ app.get(["/d/:channelid", "/g/:guildid/c/:channelid", "/wap/ch"], getToken, asyn
             content: parsedContent,
             rawContent: rawContent,
             links: extractLinks(rawContent),
+            attachments: parsedMsg.attachments || [],
             reactions: msg.reactions || []
         });
     });
@@ -1624,6 +1630,7 @@ app.all(["/d/:channelid/m/:messageid", "/g/:guildid/c/:channelid/m/:messageid", 
     let content = cached?.content ?? (req.query?.content ?? req.body?.content ?? "");
     let rawContent = cached?.rawContent ?? (req.query?.rawContent ?? req.body?.rawContent ?? "");
     let links = cached?.links ?? extractLinks(rawContent);
+    let attachments = cached?.attachments || [];
 
     const rawChannelId = decompressID(channelID, 'channel');
     const rawMessageId = decompressID(messageID, 'message');
@@ -1639,6 +1646,23 @@ app.all(["/d/:channelid/m/:messageid", "/g/:guildid/c/:channelid/m/:messageid", 
         rawServerId = channelGuildCache.get(rawChannelId);
     }
 
+    if (!cached) {
+        try {
+            const singleMsg = (await axios.get(`${DEST_BASE}/channels/${rawChannelId}/messages/${rawMessageId}`, { headers: res.locals.headers })).data;
+            if (singleMsg) {
+                const parsed = parseMessageObject(req, res, singleMsg, rawServerId !== '@me' ? rawServerId : null);
+                rawAuthorName = singleMsg.author?.username || "Unknown";
+                authorName = parsed.author?.name || normalizeStripEmoji(req, rawAuthorName, res);
+                content = parsed.content;
+                rawContent = singleMsg.content || "";
+                links = extractLinks(rawContent);
+                attachments = parsed.attachments || [];
+                const rawUserId = getRawUserIdFromToken(res.locals.token);
+                isOwn = Boolean(singleMsg.author && (singleMsg.author.id === rawUserId || compressID(singleMsg.author.id) === res.locals.userID));
+            }
+        } catch (e) {}
+    }
+
     render(res, "msg", {
         id: channelID,
         msgid: messageID,
@@ -1650,6 +1674,7 @@ app.all(["/d/:channelid/m/:messageid", "/g/:guildid/c/:channelid/m/:messageid", 
         content,
         rawContent,
         links,
+        attachments,
         rec: messageID,
         recname: rawAuthorName,
         token: res.locals.compressedToken,

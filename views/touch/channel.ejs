@@ -91,9 +91,15 @@
                             </div>
                         <% }) %>
                     <% } %>
-                    <% if (m.attachments) { %>
+                    <% if (theme.showAttachments && m.attachments) { %>
                         <% m.attachments.forEach(att => { %>
-                            <div><a href="<%= att.url %>"><%- fit(att.filename) %></a></div>
+                            <div>
+                                <% if (att.isImage) { %>
+                                    <a href="<%= gpath %>/<%= id %>/m/<%= m.id %><%= tokenParam %>"><%- fit(att.filename) %></a>
+                                <% } else { %>
+                                    <a href="<%= att.url %>"><%- fit(att.filename) %></a>
+                                <% } %>
+                            </div>
                         <% }) %>
                     <% } %>
                     <% if (m.reactions && m.reactions.length) { %>

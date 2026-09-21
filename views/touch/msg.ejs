@@ -18,6 +18,20 @@
         <p><b><%- fit(authorName) %>:</b> <%- fit(content) %></p>
         <hr>
         <ul style="list-style-type: none; padding-left: 0;">
+            <% if (locals.attachments && attachments.length > 0) { %>
+                <% const imageCount = attachments.filter(a => a.isImage).length; %>
+                <% attachments.forEach(att => { %>
+                    <% if (att.isImage) { %>
+                        <li style="margin-bottom: 0.5em;">
+                            <a href="<%= att.url %>" target="_blank" rel="noopener noreferrer">Open image<%= imageCount > 1 ? ` (${fit(att.filename)})` : '' %></a>
+                        </li>
+                    <% } else { %>
+                        <li style="margin-bottom: 0.5em;">
+                            <a href="<%= att.url %>" target="_blank" rel="noopener noreferrer">Open file: <%- fit(att.filename) %></a>
+                        </li>
+                    <% } %>
+                <% }) %>
+            <% } %>
             <li style="margin-bottom: 0.5em;">
                 <a href="<%= gpath %>/<%= id %>/reply/<%= msgid %>?recname=<%= encodeURIComponent(authorName) %><%= tokenParam.replace('?', '&') %>">Reply to message</a>
             </li>

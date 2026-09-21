@@ -16,6 +16,18 @@
         </p>
 
         <p>
+            <% if (locals.attachments && attachments.length > 0) { %>
+                <% const imageCount = attachments.filter(a => a.isImage).length; %>
+                <% attachments.forEach(att => { %>
+                    <% if (att.isImage) { %>
+                        <a href="<%= att.url %>">Open image<%= imageCount > 1 ? ` (${sanitize(att.filename)})` : '' %></a>
+                        <br/>
+                    <% } else { %>
+                        <a href="<%= att.url %>">Open file: <%- sanitize(att.filename) %></a>
+                        <br/>
+                    <% } %>
+                <% }) %>
+            <% } %>
             <anchor>
                 <go href="#reply">
                     <setvar name="message" value=""/>

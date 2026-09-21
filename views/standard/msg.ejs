@@ -16,6 +16,20 @@
 
     <div class="sb">Actions</div>
     <div class="s">
+        <% if (locals.attachments && attachments.length > 0) { %>
+            <% const imageCount = attachments.filter(a => a.isImage).length; %>
+            <% attachments.forEach(att => { %>
+                <% if (att.isImage) { %>
+                    <div>
+                        <a href="<%= att.url %>" target="_blank" rel="noopener noreferrer">&gt; Open image<%= imageCount > 1 ? ` (${fit(att.filename)})` : '' %></a>
+                    </div>
+                <% } else { %>
+                    <div>
+                        <a href="<%= att.url %>" target="_blank" rel="noopener noreferrer">&gt; Open file: <%- fit(att.filename) %></a>
+                    </div>
+                <% } %>
+            <% }) %>
+        <% } %>
         <div>
             <a href="<%= gpath %>/<%= id %>/reply/<%= msgid %>?recname=<%= encodeURIComponent(authorName) %><%= tokenParam.replace('?', '&') %>">&gt; Reply to message</a>
         </div>

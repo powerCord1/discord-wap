@@ -76,11 +76,15 @@
         <% } %>
 
         <!-- attachments (names/download links) -->
-        <% if (m.attachments) { %>
+        <% if (theme.showAttachments && m.attachments) { %>
             <% m.attachments.forEach(att => { %>
                 <div>
                     <!-- <img src="/wap/page.png" alt="attachment"> -->
-                    <a href="<%= att.url %>"><%- fit(att.filename) %></a>
+                    <% if (att.isImage) { %>
+                        <a href="<%= gpath %>/<%= id %>/m/<%= m.id %><%= tokenParam %>"><%- fit(att.filename) %></a>
+                    <% } else { %>
+                        <a href="<%= att.url %>"><%- fit(att.filename) %></a>
+                    <% } %>
                 </div>
             <% }) %>
         <% } %>
