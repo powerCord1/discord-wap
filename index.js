@@ -274,7 +274,15 @@ function parseMessageObject(req, res, msg, rawGuildId = null) {
                     width = Math.round(width / ratio);
                     height = Math.round(height / ratio);
                 }
-                url = att.proxy_url ? (att.proxy_url.replace(/^https/, 'http') + `width=${width}&height=${height}`) : att.url;
+                if (att.proxy_url) {
+                    const proxyHttp = att.proxy_url.replace(/^https:\/\//, 'http://');
+                    const sep = proxyHttp.includes('?') ? '&' : '?';
+                    url = (width && height) ? `${proxyHttp}${sep}width=${width}&height=${height}` : proxyHttp;
+                } else if (process.env.CDN_PROXY) {
+                    url = att.url.replace("https://cdn.discordapp.com", process.env.CDN_PROXY);
+                } else {
+                    url = att.url;
+                }
             }
             else if (process.env.CDN_PROXY) {
                 url = att.url.replace("https://cdn.discordapp.com", process.env.CDN_PROXY);

@@ -95,7 +95,7 @@
                         <% m.attachments.forEach(att => { %>
                             <div>
                                 <% if (att.isImage) { %>
-                                    <a href="<%= gpath %>/<%= id %>/m/<%= m.id %><%= tokenParam %>"><%- fit(att.filename) %></a>
+                                    <a href="<%= gpath %>/<%= id %>/m/<%= m.id %><%= tokenParam %>"><img class="attachment-img" src="<%= att.url %>" alt="<%- fit(att.filename) %>"></a>
                                 <% } else { %>
                                     <a href="<%= att.url %>"><%- fit(att.filename) %></a>
                                 <% } %>
